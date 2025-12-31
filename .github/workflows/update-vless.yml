@@ -1,0 +1,107 @@
+name: Update Russian VLESS Configs + Check & Update Time
+on:
+  schedule:
+    - cron: '15 */1 * * *' # Каждые 6 часов
+  workflow_dispatch:
+
+jobs:
+  process-and-update:
+    runs-on: ubuntu-latest
+    outputs:
+      work_file_changed: ${{ steps.check-changes.outputs.work_changed }}
+      time_file_changed: ${{ steps.check-changes.outputs.time_changed }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install requests[socks] tqdm rich psutil urllib3
+
+      - name: Download and install latest Xray core
+        run: |
+          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip -o Xray-linux-64.zip
+          chmod +x xray
+          sudo mv xray /usr/local/bin/xray
+
+      - name: Run collection script (сбор ссылок)
+        run: python collect_russian_vless.py
+
+      # === УЛУЧШЕННЫЙ БЭКАП: 48 версий, полностью безопасный при отсутствии файлов ===
+      - name: Backup previous versions of sidr_vless_work.txt (48 versions)
+        run: |
+          # Создаём папку old_work, если её нет (идемпотентно)
+          mkdir -p old_work
+
+          # Удаляем самый старый бэкап только если он существует
+          [ -f old_work/old_worked48.txt ] && rm old_work/old_worked48.txt
+
+          # Сдвигаем файлы с 47-го по 1-й только если они есть
+          for i in $(seq 47 -1 1); do
+            if [ -f old_work/old_worked${i}.txt ]; then
+              mv old_work/old_worked${i}.txt old_work/old_worked$((i+1)).txt
+            fi
+          done
+
+          # Копируем текущий sidr_vless_work.txt в old_worked1.txt только если он существует
+          # (после collect_russian_vless.py он может ещё не существовать, а появится только после work_test.py)
+          if [ -f sidr_vless_work.txt ]; then
+            cp sidr_vless_work.txt old_work/old_worked1.txt
+          fi
+
+      # === Конец бэкапа ===
+
+      - name: Run checker script (проверка рабочих)
+        run: python work_test.py
+
+      # Условно запускаем обновление времени только если sidr_vless_work.txt изменился
+      - name: Check if sidr_vless_work.txt changed (preliminary)
+        id: pre-check
+        run: |
+          git add sidr_vless_work.txt || true  # не падать, если файла нет
+          if git diff --quiet --staged sidr_vless_work.txt 2>/dev/null; then
+            echo "work_changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "work_changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run update time script (если были изменения в рабочих конфигах)
+        if: steps.pre-check.outputs.work_changed == 'true' || github.event_name == 'push' || github.event_name == 'pull_request'
+        run: python time_work.py
+
+      - name: Detect all changes
+        id: check-changes
+        run: |
+          git add sidr_vless.txt sidr_vless_work.txt sidr_vless_time.txt old_work/ || true
+          if git diff --staged --quiet sidr_vless_work.txt 2>/dev/null; then
+            echo "work_changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "work_changed=true" >> $GITHUB_OUTPUT
+          fi
+          if git diff --staged --quiet sidr_vless_time.txt 2>/dev/null; then
+            echo "time_changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "time_changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push all changes (only if something changed)
+        if: steps.check-changes.outputs.work_changed == 'true' || steps.check-changes.outputs.time_changed == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add sidr_vless.txt sidr_vless_work.txt sidr_vless_time.txt old_work/
+
+          COMMIT_MSG="Auto update: collected + checked Russian VLESS configs"
+          if [[ "${{ steps.check-changes.outputs.time_changed }}" == "true" ]]; then
+            COMMIT_MSG="$COMMIT_MSG and updated sidr_vless_time.txt [skip ci]"
+          fi
+
+          git commit -m "$COMMIT_MSG"
+          git push
