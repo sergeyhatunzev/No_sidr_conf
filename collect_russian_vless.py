@@ -6,7 +6,6 @@ from tqdm import tqdm
 from collections import OrderedDict
 import concurrent.futures  # Добавлено для многопоточности
 
-# Твои CIDR-диапазоны (оставь свой полный список здесь, например российские)
 CIDR_STRINGS = [
     '2.56.138.0/24',
     '2.59.49.0/24',
@@ -2337,13 +2336,62 @@ ADDITIONAL_URLS = [
    "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/CUSTOM",
    "https://fsub.flux.2bd.net/githubmirror/bypass/bypass-all.txt",
    "https://sub.wetruth.workers.dev/sub",
-       
+    "https://pay.cloudtips.ru/p/f3e0c6ad",
+   "https://avencores.github.io/goida-vpn-site",
+   "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/config.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/1.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/2.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/3.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/4.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/5.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/6.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/7.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/8.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/9.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/10.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/11.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/12.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/13.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/14.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/15.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/16.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/17.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/18.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/19.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/20.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/21.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/22.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/23.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/24.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/25.txt",
+   "https://github.com/KiryaScript/white-lists/raw/refs/heads/main/githubmirror/26.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/out/All_Configs_Sub.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/Splitted-By-Protocol/hy2.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/Splitted-By-Protocol/ss.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/Splitted-By-Protocol/ssr.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/Splitted-By-Protocol/trojan.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/Splitted-By-Protocol/tuic.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/Splitted-By-Protocol/vless.txt",
+   "https://github.com/kismetpro/NodeSuber/raw/refs/heads/main/Splitted-By-Protocol/vmess.txt",
+   "https://raw.githubusercontent.com/koteey/Ms.Kerosin-VPN/refs/heads/main/proxies.txt",
+   "https://raw.githubusercontent.com/koteey/Mr.Kerosin-VPN/refs/heads/main/proxies.txt",
+   "https://raw.githubusercontent.com/koteey/Mr.Kerosin-VPN/refs/heads/main/work.proxies.txt",
+   "https://raw.githubusercontent.com/DarkFirexs/Whitelist-bypass_VPN/refs/heads/main/Whitelist%20%7C%20VPN",
+   "https://gist.githubusercontent.com/Gamesaix/0ff0282c8e1298bd282432146db0e997/raw/c334935f34f626307b79a794d3f18fe1584e7d74/United%2520States",
+   "https://lowik.great-site.net/?i=1",
+   "https://t.me/proxy?server=proxy-dag.ru&port=443&secret=ee94fc2b484af6e1e1c87e6576b33c257579612e7275",
+   "https://t.me/proxy?server=dagdagdag.mooo.com&port=4444&secret=dd94fc2b484af6e1e1c87e6576b33c2575",
+   "https://wlr.s3-website.cloud.ru/zNhbYZtBc",
+   "https://t.me/strbypass/72533",
+   "https://shatakvpn.github.io/ConfigForge-V2Ray",
+   "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/STR.BYPASS#STR.BYPASS👾",
+   "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/Vless#VLESS.STR.BYPASS🔥",
+   "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/STR#MEGA.STR.BYPASS⚡️",
+   "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/BYPASS#PROXY.STR.BYPASS🐺",
+   "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/CUSTOM#CUSTOM.STR.BYPASS🤟",    
        
 ]
-ADDITIONAL_URLS += [
-    f"https://raw.githubusercontent.com/sergeyhatunzev/Para_conf_sidr/refs/heads/main/old_work/old_worked{i}.txt"
-    for i in range(1, 1439)
-]
+
 
 def extract_host_from_vless(vless_url):
     match = re.search(r'@([^:]+):', vless_url)
@@ -2390,6 +2438,64 @@ for i, url in enumerate(ADDITIONAL_URLS, 1):
             print(f"Источник {i}: {len(vless)} конфигов")
     except Exception as e:
         print(f"Ошибка источника {i}: {e}")
+
+import os
+import glob
+
+BACKUP_DIR = "old_work"
+local_files = glob.glob(os.path.join(BACKUP_DIR, "old_worked*.txt"))
+
+# Сортируем от самого свежего (old_worked1) к старому
+local_files.sort(key=lambda x: int(''.join(filter(str.isdigit, os.path.basename(x)))))
+
+print(f"\nНайдено локальных бэкап-файлов: {len(local_files)} шт.")
+print("Читаем локальные бэкапы...")
+
+for i, file_path in enumerate(local_files, 1):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            vless = [l.strip() for l in content.splitlines() if l.strip().startswith('vless://')]
+            all_vless_lines.extend(vless)
+            if len(vless) > 0:
+                print(f"Локальный бэкап {i} ({os.path.basename(file_path)}): {len(vless)} конфигов")
+    except Exception as e:
+        print(f"Ошибка чтения локального файла {i} ({os.path.basename(file_path)}): {e}")
+
+# === 3. Читаем дополнительные файлы из корня репозитория (только с цифрами: vless*.txt где есть цифры) ===
+print("\nПроверяем дополнительные файлы в корне репозитория (vless с цифрами)...")
+
+# Находим файлы вида vless*.txt, где в имени есть хотя бы одна цифра
+import re
+root_vless_files = [
+    f for f in glob.glob("vless*.txt")
+    if re.search(r'\d', os.path.basename(f))  # проверяем, есть ли хотя бы одна цифра в имени файла
+]
+
+if root_vless_files:
+    print(f"Найдено файлов с цифрами в имени: {len(root_vless_files)} шт.")
+    for i, file_path in enumerate(root_vless_files, 1):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                vless = [l.strip() for l in content.splitlines() if l.strip().startswith('vless://')]
+                all_vless_lines.extend(vless)
+                if len(vless) > 0:
+                    print(f"Корневой файл {i} ({os.path.basename(file_path)}): {len(vless)} конфигов")
+        except Exception as e:
+            print(f"Ошибка чтения {os.path.basename(file_path)}: {e}")
+
+    # Удаляем все эти файлы после успешного чтения
+    print("Удаляем обработанные корневые файлы...")
+    for file_path in root_vless_files:
+        try:
+            os.remove(file_path)
+            print(f"Удалён: {os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"Не удалось удалить {os.path.basename(file_path)}: {e}")
+else:
+    print("Дополнительных файлов вида vless<цифры>.txt в корне не найдено.")
+
 
 print(f"\nВсего собрано vless-ссылок: {len(all_vless_lines)}")
 
