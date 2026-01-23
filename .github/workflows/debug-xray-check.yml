@@ -23,7 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install rich requests psutil urllib3
-
+          pip install rich requests[socks] psutil urllib3
       # 4. Скачиваем и готовим Xray (самый важный исправленный шаг)
       - name: Download and prepare latest Xray
         run: |
