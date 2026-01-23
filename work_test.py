@@ -13,6 +13,7 @@ import json
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
+import threading
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -22,11 +23,12 @@ OUTPUT_FILE = "sidr_vless_work.txt"
 TEST_DOMAIN = "https://www.google.com/generate_204"
 TIMEOUT = 30
 THREADS = 200
+SINGLE_THREADS = 200        
 PROXIES_PER_BATCH = 50
 LOCAL_PORT_START = 10000
-CORE_STARTUP_TIMEOUT = 12          # увеличил с 12 до 15 секунд
+CORE_STARTUP_TIMEOUT = 12
 CORE_KILL_DELAY = 0.08
-CHECK_FIRST_PORTS = 3             # сколько первых портов проверять на запуск
+CHECK_FIRST_PORTS = 3
 
 # ------------------------------- RICH -------------------------------
 try:
@@ -39,6 +41,17 @@ except ImportError:
     sys.exit(1)
 
 logger = console
+
+# ------------------------------- ПОРТЫ -------------------------------
+port_lock = threading.Lock()
+current_port = LOCAL_PORT_START
+
+def allocate_ports(count):
+    global current_port
+    with port_lock:
+        start = current_port
+        current_port += count + 25          # запас как в оригинале
+        return start
 
 # ------------------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------------------
 def clean_url(url):
@@ -261,6 +274,60 @@ def create_batch_config_file(proxy_list, start_port, work_dir):
     return path, valid_proxies, None
 
 
+# ------------------------------- ОДИНОЧНАЯ ПРОВЕРКА -------------------------------
+def single_check(url, port, work_dir, parsed, task, progress):
+    addr, tag = get_proxy_info(parsed)
+
+    cfg_path, mapping_single, _ = create_batch_config_file([url], port, work_dir)
+    if not mapping_single:
+        progress.advance(task)
+        return None
+
+    proc = run_core(CORE_PATH, cfg_path)
+    if not proc:
+        progress.advance(task)
+        try:
+            os.remove(cfg_path)
+        except:
+            pass
+        return None
+
+    started = False
+    for _ in range(int(CORE_STARTUP_TIMEOUT * 30)):
+        if is_port_in_use(port):
+            started = True
+            break
+        time.sleep(0.12)
+
+    if started:
+        time.sleep(1.4)
+        lat, err = check_connection(port)
+        if lat is not False:
+            logger.print(f"[green]LIVE (одиночный)[/] {addr:<22} | {lat:>4}ms | {tag}")
+            kill_core(proc)
+            time.sleep(CORE_KILL_DELAY)
+            try:
+                os.remove(cfg_path)
+            except:
+                pass
+            progress.advance(task)
+            return (url, lat)
+        else:
+            logger.print(f"[red]DEAD (одиночный)[/] {addr:<22} | {'':>8} | {tag} → {err or '?'}")
+    else:
+        logger.print(f"[dark_orange]Одиночный не стартанул → {addr}[/]")
+
+    kill_core(proc)
+    time.sleep(CORE_KILL_DELAY)
+    try:
+        os.remove(cfg_path)
+    except:
+        pass
+
+    progress.advance(task)
+    return None
+
+
 # ------------------------------- ОСТАЛЬНОЕ -------------------------------
 def is_port_in_use(port):
     try:
@@ -426,17 +493,18 @@ def main():
         def check_batch(chunk, start_port):
             cfg_path, mapping, _ = create_batch_config_file(chunk, start_port, TEMP_DIR)
             if not mapping:
+                # Пропускаем advance для невалидных (как в оригинале)
                 return []
 
             proc = run_core(CORE_PATH, cfg_path)
             if not proc:
                 return []
 
-            # Проверяем, запустилось ли ядро — смотрим на несколько первых портов
+            # Проверяем запуск ядра по первым портам
             ports_to_check = [mapping[i][1] for i in range(min(CHECK_FIRST_PORTS, len(mapping)))]
 
             started = False
-            for _ in range(int(CORE_STARTUP_TIMEOUT * 35)):     # ~17–18 секунд
+            for _ in range(int(CORE_STARTUP_TIMEOUT * 35)):
                 for p in ports_to_check:
                     if is_port_in_use(p):
                         started = True
@@ -448,7 +516,7 @@ def main():
             batch_live = []
 
             if started:
-                time.sleep(2.2)  # даём ядру стабилизироваться
+                time.sleep(2.2)
                 for url, port, parsed in mapping:
                     lat, err = check_connection(port)
                     addr, tag = get_proxy_info(parsed)
@@ -459,56 +527,25 @@ def main():
                         logger.print(f"[red]DEAD[/] {addr:<22} | {'':>8} | {tag} → {err or 'no response'}")
                     progress.advance(task)
             else:
-                logger.print("[bold yellow]Пачка не стартовала → переходим в одиночный режим[/]")
+                logger.print(f"[bold yellow]Пачка не стартовала → одиночный режим ({SINGLE_THREADS} потоков)[/]")
                 kill_core(proc)
                 time.sleep(0.6)
 
-                for idx, (url, _, parsed) in enumerate(mapping):
-                    single_port = start_port + idx * 6 + 400   # большой запас
-                    s_cfg, s_map, _ = create_batch_config_file([url], single_port, TEMP_DIR)
+                # <<< Одиночный режим в 30 потоков >>>
+                single_futures = []
+                with ThreadPoolExecutor(max_workers=SINGLE_THREADS) as single_executor:
+                    for url, _, parsed in mapping:
+                        single_port = allocate_ports(1)
+                        single_futures.append(
+                            single_executor.submit(single_check, url, single_port, TEMP_DIR, parsed, task, progress)
+                        )
 
-                    if not s_map:
-                        progress.advance(task)
-                        continue
+                    for future in as_completed(single_futures):
+                        result = future.result()
+                        if result:
+                            batch_live.append(result)
 
-                    s_proc = run_core(CORE_PATH, s_cfg)
-                    if not s_proc:
-                        progress.advance(task)
-                        try:
-                            os.remove(s_cfg)
-                        except:
-                            pass
-                        continue
-
-                    s_started = False
-                    for _ in range(int(CORE_STARTUP_TIMEOUT * 30)):
-                        if is_port_in_use(single_port):
-                            s_started = True
-                            break
-                        time.sleep(0.12)
-
-                    if s_started:
-                        time.sleep(1.4)
-                        lat, err = check_connection(single_port)
-                        addr, tag = get_proxy_info(parsed)
-                        if lat is not False:
-                            logger.print(f"[green]LIVE (одиночный)[/] {addr:<22} | {lat:>4}ms | {tag}")
-                            batch_live.append((url, lat))
-                        else:
-                            logger.print(f"[red]DEAD (одиночный)[/] {addr:<22} | {'':>8} | {tag} → {err or '?'}")
-                    else:
-                        logger.print(f"[dark_orange]Одиночный запуск не удался → {addr}[/]")
-
-                    kill_core(s_proc)
-                    time.sleep(CORE_KILL_DELAY)
-                    try:
-                        os.remove(s_cfg)
-                    except:
-                        pass
-
-                    progress.advance(task)
-
-            # Cleanup
+            # Cleanup батчевого процесса
             kill_core(proc)
             time.sleep(CORE_KILL_DELAY)
             try:
@@ -520,10 +557,9 @@ def main():
 
         with ThreadPoolExecutor(max_workers=THREADS) as executor:
             futures = []
-            port_offset = LOCAL_PORT_START
             for chunk in chunks:
-                futures.append(executor.submit(check_batch, chunk, port_offset))
-                port_offset += len(chunk) + 25   # запас между батчами
+                batch_start_port = allocate_ports(len(chunk))
+                futures.append(executor.submit(check_batch, chunk, batch_start_port))
 
             for future in as_completed(futures):
                 live.extend(future.result())
@@ -563,6 +599,3 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Критическая ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
-
-
-
