@@ -406,6 +406,7 @@ def main():
                     break
                 time.sleep(0.05)
             if not started:
+                logger.print(f"ВНИМАНИЕ ПРОЦЕС НЕ ЗАПУСТИЛСЯ ИЛИ ЗАПУСТИЛСЯ КРИВО")
                 kill_core(proc)
                 return []
             time.sleep(0.4)
@@ -465,5 +466,6 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
+
 
 
