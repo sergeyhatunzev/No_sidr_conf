@@ -21,8 +21,8 @@ INPUT_FILE = "sidr_vless.txt"
 OUTPUT_FILE = "sidr_vless_work.txt"
 TEST_DOMAIN = "https://www.google.com/generate_204"
 TIMEOUT = 30
-THREADS = 1000
-PROXIES_PER_BATCH = 10
+THREADS = 100
+PROXIES_PER_BATCH = 100
 LOCAL_PORT_START = 10000
 CORE_STARTUP_TIMEOUT = 30.0          # увеличил с 12 до 15 секунд
 CORE_KILL_DELAY = 0.08
@@ -563,4 +563,5 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Критическая ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
+
 
