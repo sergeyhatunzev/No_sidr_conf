@@ -14,7 +14,6 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 # ------------------------------- НАСТРОЙКИ -------------------------------
 INPUT_FILE = "sidr_vless.txt"
 OUTPUT_FILE = "sidr_vless_work.txt"
@@ -25,7 +24,6 @@ PROXIES_PER_BATCH = 50
 LOCAL_PORT_START = 10000
 CORE_STARTUP_TIMEOUT = 12.0
 CORE_KILL_DELAY = 0.05
-
 # ------------------------------- RICH -------------------------------
 try:
     from rich.console import Console
@@ -35,18 +33,14 @@ try:
 except ImportError:
     print("Ошибка: pip install rich")
     sys.exit(1)
-
 logger = console
-
 # ------------------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------------------
 def clean_url(url):
     return url.strip().replace('\ufeff', '').replace('\u200b', '').replace('\n', '').replace('\r', '')
-
 # Регулярки для Reality
 REALITY_PBK_RE = re.compile(r"^[A-Za-z0-9_-]{43,44}$")
 REALITY_SID_RE = re.compile(r"^[0-9a-fA-F]{0,32}$")
 FLOW_ALLOWED = {"", "xtls-rprx-vision", "xtls-rprx-direct", "xtls-rprx-splice"}
-
 # ------------------------------- ПОЛНЫЙ ПАРСЕР VLESS -------------------------------
 def parse_vless(url):
     try:
@@ -128,14 +122,12 @@ def parse_vless(url):
         }
     except Exception:
         return None
-
 def get_proxy_info(parsed):
     if not parsed:
         return "unknown", "error"
     addr = f"{parsed['address']}:{parsed['port']}"
     tag = parsed['tag'][:50]
     return addr, tag
-
 # ------------------------------- ГЕНЕРАЦИЯ OUTBOUND -------------------------------
 def make_outbound(parsed, tag):
     if not parsed:
@@ -194,7 +186,6 @@ def make_outbound(parsed, tag):
         "settings": {"vnext": vnext},
         "streamSettings": stream
     }
-
 # ------------------------------- КОНФИГ ПАЧКИ -------------------------------
 def create_batch_config_file(proxy_list, start_port, work_dir):
     inbounds = []
@@ -231,7 +222,6 @@ def create_batch_config_file(proxy_list, start_port, work_dir):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
     return path, valid_proxies, None
-
 # ------------------------------- ОСТАЛЬНОЕ -------------------------------
 def is_port_in_use(port):
     try:
@@ -240,7 +230,6 @@ def is_port_in_use(port):
             return s.connect_ex(('127.0.0.1', port)) == 0
     except:
         return False
-
 def run_core(core_path, config_path):
     cmd = [core_path, "run", "-c", config_path]
     startupinfo = subprocess.STARTUPINFO() if platform.system() == "Windows" else None
@@ -251,7 +240,6 @@ def run_core(core_path, config_path):
     except Exception as e:
         logger.print(f"[bold red]Ошибка запуска: {e}[/]")
         return None
-
 def kill_core(proc):
     if not proc:
         logger.print(f"Ебаный в рот етого пидораса")
@@ -268,8 +256,6 @@ def kill_core(proc):
         logger.print(f"Ебаный в рот етого пидораса")
         logger.print(f"Ебаный в рот етого пидораса")
         logger.print(f"Ебаный в рот етого пидораса")
-        logger.print(f"Ебаный в рот етого пидораса")
-        
         return
     try:
         proc.kill()
@@ -278,7 +264,6 @@ def kill_core(proc):
                 child.kill()
     except:
         pass
-
 def check_connection(port):
     proxies = {'http': f'socks5://127.0.0.1:{port}', 'https': f'socks5://127.0.0.1:{port}'}
     try:
@@ -294,16 +279,13 @@ def check_connection(port):
         return False, "ReadTimeout"
     except Exception as e:
         return False, str(e)[:30]
-
 # ------------------------------- ДЕДУПЛИЦИЯ (как в v2rayN) -------------------------------
 def _are_equal(a, b):
     return (a == b) or (not a and not b)
-
 def _alpn_equal(a_list, b_list):
     a = a_list or []
     b = b_list or []
     return a == b
-
 def compare_parsed(a, b, remarks=False):
     """Сравнивает два распарсенных vless-прокси в духе CompareProfileItem из v2rayN.
     ИЗМЕНЕНИЕ: НЕ сравниваем host — если отличаются только host, считаем дубликатами."""
@@ -317,7 +299,7 @@ def compare_parsed(a, b, remarks=False):
         and _are_equal(a.get("encryption"), b.get("encryption"))
         and _are_equal(a.get("type"), b.get("type"))
         and _are_equal(a.get("headerType"), b.get("headerType"))
-        # and _are_equal(a.get("host"), b.get("host"))  # <-- УБРАНО! host игнорируется
+        # and _are_equal(a.get("host"), b.get("host")) # <-- УБРАНО! host игнорируется
         and _are_equal(a.get("path"), b.get("path"))
         and _are_equal(a.get("security"), b.get("security"))
         and _are_equal(a.get("flow"), b.get("flow"))
@@ -328,7 +310,6 @@ def compare_parsed(a, b, remarks=False):
         and _are_equal(a.get("sid"), b.get("sid"))
         and (not remarks or a.get("tag") == b.get("tag"))
     )
-
 def deduplicate_proxies(proxies_with_latency):
     """
     Удаляет дубликаты в стиле v2rayN:
@@ -355,7 +336,6 @@ def deduplicate_proxies(proxies_with_latency):
             lst_remove.append((url, latency))
     removed_count = len(lst_remove)
     return lst_keep, removed_count
-
 # ------------------------------- MAIN -------------------------------
 def main():
     global CORE_PATH
@@ -456,7 +436,6 @@ def main():
         shutil.rmtree(TEMP_DIR)
     except:
         pass
-
 if __name__ == '__main__':
     try:
         main()
@@ -466,8 +445,3 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
-
-
-
-
-
