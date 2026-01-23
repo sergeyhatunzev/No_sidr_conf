@@ -254,6 +254,22 @@ def run_core(core_path, config_path):
 
 def kill_core(proc):
     if not proc:
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        logger.print(f"Ебаный в рот етого пидораса")
+        
         return
     try:
         proc.kill()
@@ -449,4 +465,5 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
+
 
