@@ -50,7 +50,7 @@ jobs:
           
           # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
           # Замени имя файла на своё реальное!!!
-          python your_checker_script.py   # например: python sidr_checker.py
+          python test_two_reality.py   # например: python sidr_checker.py
           # или python main.py
           # или python check_vless.py
           # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
