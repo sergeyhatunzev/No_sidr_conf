@@ -49,6 +49,12 @@ REALITY_PBK_RE = re.compile(r"^[A-Za-z0-9_-]{43,44}$")
 REALITY_SID_RE = re.compile(r"^[0-9a-fA-F]{0,32}$")
 FLOW_ALLOWED = {"", "xtls-rprx-vision", "xtls-rprx-direct", "xtls-rprx-splice"}
 
+# Разрешённые uTLS fingerprints
+ALLOWED_FINGERPRINTS = {
+    "chrome", "firefox", "safari", "edge", "360browser", "qq", "randomized",
+    "random", "randomized-ssl", "ios", "android", "okhttp"
+}
+
 # ------------------------------- ПАРСЕР VLESS -------------------------------
 def parse_vless(url):
     try:
@@ -71,7 +77,8 @@ def parse_vless(url):
         address = parsed_url.hostname or ""
         port = parsed_url.port or 443
 
-        if not uuid or not address:
+        if not uuid or not address or port <= 0 or port > 65535:
+            logger.print(f"[grey50]Пропуск: некорректный uuid/address/port → {url[:60]}...[/]")
             return None
 
         query_params = urllib.parse.parse_qs(parsed_url.query)
@@ -81,8 +88,11 @@ def parse_vless(url):
             return vals[0].strip()
 
         encryption = get_p("encryption", "none").lower()
-        net_type = get_p("type", "tcp").lower()
+        if encryption != "none":
+            logger.print(f"[grey50]Пропуск: encryption ≠ none ({encryption}) → {url[:60]}...[/]")
+            return None
 
+        net_type = get_p("type", "tcp").lower()
         if net_type in ["ws", "websocket"]:
             net_type = "ws"
         elif net_type in ["grpc", "gun"]:
@@ -114,12 +124,23 @@ def parse_vless(url):
         if sid and not REALITY_SID_RE.match(sid):
             sid = ""
 
-        sni = get_p("sni", "")
-        fp = get_p("fp", "chrome")
-        alpn_str = get_p("alpn", "")
-        alpn = [x.strip() for x in alpn_str.split(",")] if alpn_str else []
+        sni = get_p("sni", "").strip()
+        if not sni:
+            sni = address  # fallback
 
-        return {
+        fp = get_p("fp", "chrome").lower()
+        if fp not in ALLOWED_FINGERPRINTS:
+            fp = "chrome"
+
+        alpn_str = get_p("alpn", "")
+        alpn = [x.strip() for x in alpn_str.split(",") if x.strip()] if alpn_str else []
+
+        host = get_p("host", "")
+        path = urllib.parse.unquote(get_p("path", ""))
+        serviceName = get_p("serviceName", "")
+        headerType = get_p("headerType", "none")
+
+        parsed = {
             "protocol": "vless",
             "uuid": uuid,
             "address": address,
@@ -129,19 +150,65 @@ def parse_vless(url):
             "encryption": encryption,
             "pbk": pbk,
             "sid": sid,
-            "sni": sni or address,
+            "sni": sni,
             "fp": fp,
             "alpn": alpn,
             "type": net_type,
-            "host": get_p("host", ""),
-            "path": urllib.parse.unquote(get_p("path", "")),
-            "serviceName": get_p("serviceName", ""),
-            "headerType": get_p("headerType", "none"),
+            "host": host,
+            "path": path,
+            "serviceName": serviceName,
+            "headerType": headerType,
             "tag": tag
         }
-    except Exception:
-        return None
 
+        # ─────────────── СТРОГАЯ ВАЛИДАЦИЯ ОБЯЗАТЕЛЬНЫХ ПОЛЕЙ ───────────────
+
+        # TLS
+        if stream_security == "tls":
+            if not sni or "." not in sni or len(sni) < 4:
+                logger.print(f"[grey50]Пропуск: tls без валидного sni → {get_proxy_info(parsed)[0]}[/]")
+                return None
+
+        # REALITY
+        if stream_security == "reality":
+            errors = []
+            if not REALITY_PBK_RE.match(pbk):
+                errors.append("pbk invalid")
+            if not sid or not REALITY_SID_RE.match(sid):
+                errors.append("sid invalid/empty")
+            if not sni or "." not in sni:
+                errors.append("sni invalid")
+            if fp not in ALLOWED_FINGERPRINTS:
+                errors.append(f"fp invalid ({fp})")
+
+            if errors:
+                logger.print(f"[grey50]Пропуск reality: {', '.join(errors)} → {get_proxy_info(parsed)[0]}[/]")
+                return None
+
+        # Transport-specific
+        if net_type == "ws":
+            if not path or not path.startswith("/"):
+                logger.print(f"[grey50]Пропуск: ws без path или path не начинается с / → {get_proxy_info(parsed)[0]}[/]")
+                return None
+
+        elif net_type == "grpc":
+            if not serviceName:
+                logger.print(f"[grey50]Пропуск: grpc без serviceName → {get_proxy_info(parsed)[0]}[/]")
+                return None
+
+        elif net_type == "http":
+            if not path or not path.startswith("/"):
+                logger.print(f"[grey50]Пропуск: http без path → {get_proxy_info(parsed)[0]}[/]")
+                return None
+            if not host:
+                logger.print(f"[grey50]Пропуск: http без host → {get_proxy_info(parsed)[0]}[/]")
+                return None
+
+        return parsed
+
+    except Exception as e:
+        logger.print(f"[grey50]Exception в parse_vless: {str(e)[:60]} → {url[:60]}...[/]")
+        return None
 
 def get_proxy_info(parsed):
     if not parsed:
