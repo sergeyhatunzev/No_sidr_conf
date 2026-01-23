@@ -1,7 +1,7 @@
 name: Debug VLESS checker with Xray
 
 on:
-  workflow_dispatch:     # ← кнопка "Run workflow" в интерфейсе GitHub
+  workflow_dispatch:
 
 jobs:
   debug-run:
@@ -18,51 +18,77 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 3. Ставим все библиотеки, которые есть в твоём скрипте
+      # 3. Устанавливаем библиотеки
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
           pip install rich requests psutil urllib3
 
-      # 4. Качаем самый свежий Xray (linux 64-bit)
-      - name: Download latest Xray
+      # 4. Скачиваем и готовим Xray (самый важный исправленный шаг)
+      - name: Download and prepare latest Xray
         run: |
+          echo "Скачиваем Xray..."
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip xray.zip -d xray_bin
-          chmod +x xray_bin/xray
-          mv xray_bin/xray ./xray
-          ls -la ./xray
-          ./xray version || echo "Xray version command failed"
+          
+          echo "Распаковываем прямо в текущую папку..."
+          unzip -o xray.zip xray
+          
+          echo "Даём права на исполнение..."
+          chmod +x xray
+          
+          echo "Проверяем, что файл существует и исполняемый:"
+          ls -la xray
+          ls -l xray
+          file xray
+          
+          echo "Пробуем запустить версию:"
+          ./xray version || echo "Не удалось запустить ./xray version"
 
-      # 5. Показываем, что лежит рядом с xray (чтоб понять, есть ли твой скрипт)
-      - name: Show directory contents
+      # 5. Показываем содержимое директории
+      - name: Show current directory contents
         run: |
           pwd
           ls -la
-          echo "Если здесь нет твоего .py файла — положи его в репозиторий!"
+          echo ""
+          echo "Должны быть видны: xray, test_two_reality.py (или твой .py), возможно sidr_vless.txt"
 
-      # 6. Запускаем твой скрипт и показываем ВСЁ, что он выводит
-      - name: Run your checker script (with full output)
+      # 6. Запускаем скрипт с максимальной диагностикой
+      - name: Run checker script with debug
         run: |
           echo "========================================"
-          echo "Запускаем скрипт..."
+          echo "Запускаем скрипт test_two_reality.py"
           echo "========================================"
           
-          # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
-          # Замени имя файла на своё реальное!!!
-          python test_two_reality.py   # например: python sidr_checker.py
-          # или python main.py
-          # или python check_vless.py
-          # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
-
+          echo "Проверяем наличие xray перед запуском:"
+          ls -l xray || echo "xray НЕ НАЙДЕН"
+          echo "Права на xray:"
+          ls -l xray
+          
+          echo "Проверяем наличие скрипта:"
+          ls -l test_two_reality.py || echo "Скрипт НЕ НАЙДЕН!"
+          
+          echo ""
+          echo "Запускаем python -u (unbuffered):"
+          python -u test_two_reality.py 2>&1 || echo "Скрипт завершился с ошибкой, код возврата: $?"
+          
+          echo ""
           echo "========================================"
-          echo "Скрипт завершился. Смотри выше все сообщения и ошибки"
+          echo "Выполнение скрипта завершено"
           echo "========================================"
 
-
-     
-
-      # 8. Показываем последние 30 строк лога (на всякий случай)
-      - name: Show last lines of output
+      # 7. Показываем результат (если файл создан)
+      - name: Show working proxies file (if any)
         if: always()
-        run: tail -n 30 $GITHUB_STEP_SUMMARY || echo "Нет лога"
+        run: |
+          if [ -f sidr_vless_work.txt ]; then
+            echo "sidr_vless_work.txt существует:"
+            head -n 10 sidr_vless_work.txt || echo "Файл пустой"
+            wc -l sidr_vless_work.txt
+          else
+            echo "sidr_vless_work.txt НЕ создан"
+          fi
+
+      # 8. Финальный хвост логов (на всякий случай)
+      - name: Final log tail
+        if: always()
+        run: echo "Конец логов"
