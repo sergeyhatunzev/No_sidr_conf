@@ -23,7 +23,7 @@ TIMEOUT = 30
 THREADS = 200
 PROXIES_PER_BATCH = 50
 LOCAL_PORT_START = 10000
-CORE_STARTUP_TIMEOUT = 4.0
+CORE_STARTUP_TIMEOUT = 12.0
 CORE_KILL_DELAY = 0.05
 
 # ------------------------------- RICH -------------------------------
@@ -449,3 +449,4 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
+
