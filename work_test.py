@@ -405,7 +405,7 @@ def main():
                     started = True
                     break
                 time.sleep(1)
-             if not started:
+            if not started:
                 logger.print("[bold yellow]ВНИМАНИЕ: первый порт НЕ открылся за 12 сек — пробуем проверить остальные[/]")
                 time.sleep(10)
                 #return []
@@ -466,6 +466,7 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
+
 
 
 
