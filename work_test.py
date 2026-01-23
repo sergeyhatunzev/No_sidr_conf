@@ -404,12 +404,12 @@ def main():
                 if mapping and is_port_in_use(mapping[0][1]):
                     started = True
                     break
-                time.sleep(0.05)
-            if not started:
-                logger.print(f"ВНИМАНИЕ ПРОЦЕС НЕ ЗАПУСТИЛСЯ ИЛИ ЗАПУСТИЛСЯ КРИВО")
-                kill_core(proc)
-                return []
-            time.sleep(0.4)
+                time.sleep(1)
+             if not started:
+                logger.print("[bold yellow]ВНИМАНИЕ: первый порт НЕ открылся за 12 сек — пробуем проверить остальные[/]")
+                time.sleep(10)
+                #return []
+            time.sleep(3)
             batch_live = []
             for url, port, parsed in mapping:
                 lat, err = check_connection(port)
@@ -466,6 +466,7 @@ if __name__ == '__main__':
         logger.print(f"[bold red]Ошибка: {e}[/]")
         import traceback
         traceback.print_exc()
+
 
 
 
