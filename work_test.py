@@ -23,7 +23,7 @@ OUTPUT_FILE = "sidr_vless_work.txt"
 TEST_DOMAIN = "https://www.google.com/generate_204"
 TIMEOUT = 30
 THREADS = 200
-SINGLE_THREADS = 200        
+SINGLE_THREADS = 200        # Увеличено по вашему запросу
 PROXIES_PER_BATCH = 50
 LOCAL_PORT_START = 10000
 CORE_STARTUP_TIMEOUT = 12
@@ -50,7 +50,7 @@ def allocate_ports(count):
     global current_port
     with port_lock:
         start = current_port
-        current_port += count + 25          # запас как в оригинале
+        current_port += count + 25
         return start
 
 # ------------------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------------------
@@ -313,9 +313,10 @@ def single_check(url, port, work_dir, parsed, task, progress):
             progress.advance(task)
             return (url, lat)
         else:
-            logger.print(f"[red]DEAD (одиночный)[/] {addr:<22} | {'':>8} | {tag} → {err or '?'}")
+            logger.print(f"[red]DEAD (одиночный)[/] {addr:<22} | {'':>8} | {tag} → {err or 'no response'}")
     else:
-        logger.print(f"[dark_orange]Одиночный не стартанул → {addr}[/]")
+        # Унифицировано как DEAD с понятной причиной
+        logger.print(f"[red]DEAD (одиночный)[/] {addr:<22} | {'':>8} | {tag} → core not started")
 
     kill_core(proc)
     time.sleep(CORE_KILL_DELAY)
@@ -493,14 +494,12 @@ def main():
         def check_batch(chunk, start_port):
             cfg_path, mapping, _ = create_batch_config_file(chunk, start_port, TEMP_DIR)
             if not mapping:
-                # Пропускаем advance для невалидных (как в оригинале)
                 return []
 
             proc = run_core(CORE_PATH, cfg_path)
             if not proc:
                 return []
 
-            # Проверяем запуск ядра по первым портам
             ports_to_check = [mapping[i][1] for i in range(min(CHECK_FIRST_PORTS, len(mapping)))]
 
             started = False
@@ -531,7 +530,6 @@ def main():
                 kill_core(proc)
                 time.sleep(0.6)
 
-                # <<< Одиночный режим в 30 потоков >>>
                 single_futures = []
                 with ThreadPoolExecutor(max_workers=SINGLE_THREADS) as single_executor:
                     for url, _, parsed in mapping:
@@ -545,7 +543,6 @@ def main():
                         if result:
                             batch_live.append(result)
 
-            # Cleanup батчевого процесса
             kill_core(proc)
             time.sleep(CORE_KILL_DELAY)
             try:
@@ -564,7 +561,6 @@ def main():
             for future in as_completed(futures):
                 live.extend(future.result())
 
-    # Дедупликация
     live, removed_count = deduplicate_proxies(live)
     logger.print(f"[yellow]Удалено дубликатов: {removed_count}[/]")
 
