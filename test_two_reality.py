@@ -3,38 +3,33 @@ import time
 import socket
 import requests
 import os
-import json
-import sys
 import psutil
-from datetime import datetime
 
 # ================== НАСТРОЙКИ ==================
-TEST_PORT = 1080                # порт socks5 в конфиге
-TEST_URL = "https://www.google.com/generate_204"  # или "https://1.1.1.1", "https://connectivitycheck.gstatic.com/generate_204"
-TIMEOUT_SEC = 15                # таймаут на запрос
-STARTUP_WAIT_MAX = 12.0         # максимум секунд на запуск xray
-POLL_INTERVAL = 0.15            # шаг проверки порта
+PORT = 1080                     # порт socks5 в конфигах
+TEST_URL = "https://www.google.com/generate_204"
+TIMEOUT = 12                    # секунд на запрос
+MAX_STARTUP_WAIT = 15.0         # секунд на запуск xray
+POLL_INTERVAL = 0.2             # шаг проверки порта
 
-XRAY_PATH = "xray"              # или "xray.exe", или полный путь
-# XRAY_PATH = r"C:\tools\xray\xray.exe"   # пример для Windows
+XRAY_PATH = "xray"              # или "xray.exe" / полный путь
+# XRAY_PATH = r"./xray"         # пример, если лежит рядом
 
-# ================== ДВА КОНФИГА ==================
+# ================== ДВА КОНФИГА (как строки) ==================
 
-CONFIG_1 = """{
+CONFIG_SWEDEN = """{
   "log": {"loglevel": "warning"},
   "inbounds": [
     {
       "port": 1080,
       "listen": "127.0.0.1",
       "protocol": "socks",
-      "tag": "in_1080",
       "settings": {"udp": false}
     }
   ],
   "outbounds": [
     {
       "protocol": "vless",
-      "tag": "out_1080",
       "settings": {
         "vnext": [
           {
@@ -67,29 +62,26 @@ CONFIG_1 = """{
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["in_1080"],
-        "outboundTag": "out_1080"
+        "inboundTag": ["inbound"],
+        "outboundTag": "outbound"
       }
-    ],
-    "domainStrategy": "AsIs"
+    ]
   }
 }"""
 
-CONFIG_2 = """{
+CONFIG_NETHERLANDS = """{
   "log": {"loglevel": "warning"},
   "inbounds": [
     {
       "port": 1080,
       "listen": "127.0.0.1",
       "protocol": "socks",
-      "tag": "in_1080",
       "settings": {"udp": false}
     }
   ],
   "outbounds": [
     {
       "protocol": "vless",
-      "tag": "out_1080",
       "settings": {
         "vnext": [
           {
@@ -122,126 +114,104 @@ CONFIG_2 = """{
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["in_1080"],
-        "outboundTag": "out_1080"
+        "inboundTag": ["inbound"],
+        "outboundTag": "outbound"
       }
-    ],
-    "domainStrategy": "AsIs"
+    ]
   }
 }"""
+
+CONFIGS = [
+    ("Sweden 150.241.65.72", CONFIG_SWEDEN),
+    ("Netherlands 144.31.224.141", CONFIG_NETHERLANDS)
+]
 
 # ================== ФУНКЦИИ ==================
 
 def is_port_open(port):
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.2)
+        with socket.socket() as s:
+            s.settimeout(0.3)
             return s.connect_ex(('127.0.0.1', port)) == 0
     except:
         return False
 
-def kill_process(proc):
+def kill_proc(proc):
     if not proc:
         return
     try:
         proc.kill()
         if psutil.pid_exists(proc.pid):
-            parent = psutil.Process(proc.pid)
-            for child in parent.children(recursive=True):
+            for child in psutil.Process(proc.pid).children(recursive=True):
                 child.kill()
-            parent.kill()
     except:
         pass
 
-def test_config(config_json_str, label):
-    print(f"\n{'='*60}")
-    print(f"Тест: {label}")
-    print(f"Время запуска: {datetime.now().strftime('%H:%M:%S')}")
-    print('='*60)
+def test_one_config(name, config_str):
+    print(f"\n=== Тест: {name} ===")
 
-    # Создаём временный файл конфига
-    temp_config = f"temp_{label.replace(' ', '_')}.json"
-    with open(temp_config, "w", encoding="utf-8") as f:
-        f.write(config_json_str)
+    temp_file = f"temp_{name.replace(' ', '_')}.json"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        f.write(config_str)
 
-    # Запускаем xray
-    cmd = [XRAY_PATH, "run", "-c", temp_config]
     try:
         proc = subprocess.Popen(
-            cmd,
+            [XRAY_PATH, "run", "-c", temp_file],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,   # можно убрать DEVNULL и увидеть логи
-            # stderr=subprocess.STDOUT,
-            # stdout=sys.stdout,          # раскомментировать для живых логов
+            stderr=subprocess.DEVNULL   # ← поменяй на sys.stdout, если хочешь видеть логи
         )
     except Exception as e:
-        print(f"Ошибка запуска xray: {e}")
+        print(f"Ошибка запуска Xray: {e}")
         return
 
-    # Ждём открытия порта
-    started = False
-    start_time = time.time()
-    for _ in range(int(STARTUP_WAIT_MAX / POLL_INTERVAL)):
-        if is_port_open(TEST_PORT):
-            started = True
+    # Ожидание порта
+    start = time.time()
+    opened = False
+    while time.time() - start < MAX_STARTUP_WAIT:
+        if is_port_open(PORT):
+            opened = True
             break
         time.sleep(POLL_INTERVAL)
 
-    if not started:
-        print(f"Порт {TEST_PORT} не открылся за {STARTUP_WAIT_MAX} сек → таймаут запуска")
-        kill_process(proc)
-        try:
-            os.remove(temp_config)
-        except:
-            pass
+    if not opened:
+        print(f"Порт {PORT} не открылся за {MAX_STARTUP_WAIT} сек → Xray не стартовал")
+        kill_proc(proc)
+        os.remove(temp_file)
         return
 
-    print(f"Порт {TEST_PORT} открыт через {time.time() - start_time:.2f} сек")
+    print(f"Порт {PORT} открыт через {time.time() - start:.1f} сек")
 
-    # Даём ещё 1–2 секунды на установку соединения
-    time.sleep(1.8)
+    time.sleep(1.2)  # даём время на handshake
 
-    # Тестируем соединение
-    proxies = {
-        'http': f'socks5://127.0.0.1:{TEST_PORT}',
-        'https': f'socks5://127.0.0.1:{TEST_PORT}'
-    }
+    # Проверка соединения
+    proxies = {'http': f'socks5://127.0.0.1:{PORT}', 'https': f'socks5://127.0.0.1:{PORT}'}
 
     try:
-        t_start = time.time()
-        r = requests.get(TEST_URL, proxies=proxies, timeout=TIMEOUT_SEC, verify=False)
-        latency = round((time.time() - t_start) * 1000)
-
+        t0 = time.time()
+        r = requests.get(TEST_URL, proxies=proxies, timeout=TIMEOUT, verify=False)
+        ms = round((time.time() - t0) * 1000)
         if r.status_code == 204:
-            print(f"[ LIVE ] Задержка: {latency:4} мс    статус: {r.status_code}")
+            print(f"→ LIVE   {ms:4} мс")
         else:
-            print(f"[ ???? ] Задержка: {latency:4} мс    статус: HTTP {r.status_code}")
-
-    except requests.exceptions.ConnectTimeout:
-        print("[ DEAD ] ConnectTimeout")
-    except requests.exceptions.ReadTimeout:
-        print("[ DEAD ] ReadTimeout")
+            print(f"→ ????   HTTP {r.status_code}   ({ms} мс)")
     except Exception as e:
-        print(f"[ DEAD ] {type(e).__name__}: {str(e)[:80]}")
+        print(f"→ DEAD   {type(e).__name__}: {str(e)[:70]}")
 
-    # Убиваем процесс и чистим
-    kill_process(proc)
-    time.sleep(0.4)
+    kill_proc(proc)
+    time.sleep(0.5)
     try:
-        os.remove(temp_config)
+        os.remove(temp_file)
     except:
         pass
 
-# ================== ЗАПУСК ТЕСТОВ ==================
+# ================== ЗАПУСК ==================
 
 if __name__ == "__main__":
-    if not os.path.exists(XRAY_PATH) and not XRAY_PATH.endswith(".exe"):
-        print(f"Xray не найден по пути: {XRAY_PATH}")
-        print("Укажите правильный XRAY_PATH в начале скрипта")
-        sys.exit(1)
-
-    test_config(CONFIG_1, "Sweden 150.241.65.72")
-    time.sleep(2)  # пауза между тестами
-    test_config(CONFIG_2, "Netherlands 144.31.224.141")
-
-    print("\nТестирование завершено.")
+    if not os.path.isfile(XRAY_PATH) and not os.path.isfile(XRAY_PATH + ".exe"):
+        print(f"Xray не найден: {XRAY_PATH}")
+        print("Положи xray / xray.exe рядом или укажи полный путь")
+    else:
+        for name, cfg in CONFIGS:
+            test_one_config(name, cfg)
+            time.sleep(2)  # пауза между тестами
+        print("\nТест завершён.")
