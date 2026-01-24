@@ -208,7 +208,6 @@ def main():
             except: continue
 
     # --- ШАГ 2: ДЕДУБЛИКАЦИЯ ---
-    print(f"\n--- ШАГ 2: ДЕДУБЛИКАЦИЯ (Анализ {len(all_live)} рабочих) ---")
     
 
     
@@ -227,11 +226,11 @@ def main():
         for url, _ in unique_live: 
             f.write(url + '\n')
 
-    print(f"Готово! Найдено рабочих: {len(all_live)}. После удаления дублей осталось: {len(unique_live)}")
     
 
 if __name__ == '__main__':
     main()
+
 
 
 
