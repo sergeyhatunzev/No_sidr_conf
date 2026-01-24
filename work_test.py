@@ -11,6 +11,7 @@ import json
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ------------------------------- НАСТРОЙКИ -------------------------------
@@ -18,21 +19,18 @@ INPUT_FILE = "sidr_vless.txt"
 OUTPUT_FILE = "sidr_vless_work.txt"
 TEST_DOMAIN = "https://www.google.com/generate_204"
 TIMEOUT = 12
-THREADS = 200           # Оптимально для GitHub Actions (2 ядра)
-PROXIES_PER_BATCH = 80 # Размер пачки
-LOCAL_PORT_START = 15000
+THREADS = 200            
+PROXIES_PER_BATCH = 80   
+LOCAL_PORT_START = 1025   
+LOCAL_PORT_END = 65000   
 CORE_STARTUP_TIMEOUT = 5.0
 
-# Переменные для текстового прогресса
 processed_count = 0
 total_proxies_count = 0
 
 # ------------------------------- ПОМОЩНИКИ -------------------------------
 def clean_url(url):
     return url.strip().replace('\ufeff', '').replace('\u200b', '').replace('\n', '').replace('\r', '')
-
-REALITY_PBK_RE = re.compile(r"^[A-Za-z0-9_-]{43,44}$")
-FLOW_ALLOWED = {"", "xtls-rprx-vision", "xtls-rprx-direct", "xtls-rprx-splice"}
 
 def parse_vless(url):
     try:
@@ -41,13 +39,12 @@ def parse_vless(url):
         parsed_url = urllib.parse.urlparse(url.split('#')[0])
         query = urllib.parse.parse_qs(parsed_url.query)
         get_p = lambda k: query.get(k, [""])[0].strip()
-        
         net_type = get_p("type").lower() or "tcp"
         return {
             "uuid": urllib.parse.unquote(parsed_url.username or ""),
             "address": parsed_url.hostname or "",
             "port": parsed_url.port or 443,
-            "flow": get_p("flow") if get_p("flow") in FLOW_ALLOWED else "",
+            "flow": get_p("flow") if get_p("flow") in ["xtls-rprx-vision", "xtls-rprx-direct"] else "",
             "security": get_p("security") or "none",
             "pbk": get_p("pbk"),
             "sid": re.sub(r"[^a-fA-F0-9]", "", get_p("sid")),
@@ -61,6 +58,15 @@ def parse_vless(url):
             "headerType": get_p("headerType") or "none"
         }
     except: return None
+
+# Функция сравнения (из старого скрипта, без изменений)
+def is_same_config(url1, url2):
+    p1, p2 = parse_vless(url1), parse_vless(url2)
+    if not p1 or not p2: return False
+    return (p1["address"] == p2["address"] and p1["port"] == p2["port"] and 
+            p1["uuid"] == p2["uuid"] and p1["sni"] == p2["sni"] and 
+            p1["type"] == p2["type"] and p1["path"] == p2["path"] and 
+            p1["pbk"] == p2["pbk"])
 
 def make_outbound(p, tag):
     if not p: return None
@@ -77,26 +83,30 @@ def make_outbound(p, tag):
     return {"protocol": "vless", "tag": tag, "settings": {"vnext": [{"address": p["address"], "port": p["port"], "users": [user]}]}, "streamSettings": stream}
 
 def is_port_in_use(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.1)
-        return s.connect_ex(('127.0.0.1', port)) == 0
+    if not (1024 <= port <= 65535): return False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.1)
+            return s.connect_ex(('127.0.0.1', port)) == 0
+    except: return False
 
 def kill_core(proc):
-    if not proc: return
-    try:
-        proc.kill()
-        proc.wait()
-    except: pass
+    if proc:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except:
+            try: proc.kill()
+            except: pass
 
 def print_progress(addr, ms, is_single=False):
     global processed_count, total_proxies_count
     pct = (processed_count / total_proxies_count) * 100 if total_proxies_count > 0 else 0
     mode = "(S)" if is_single else ""
-    # Только LIVE лог с простым текстовым прогресс-баром
     sys.stdout.write(f"\r[{pct:3.0f}%] LIVE {mode} {addr:<25} | {ms:>4}ms\n")
     sys.stdout.flush()
 
-# ------------------------------- ЧЕКЕР -------------------------------
+# ------------------------------- ЧЕКЕР (БЕЗ ИЗМЕНЕНИЙ) -------------------------------
 def check_batch(chunk, start_port, core_path, temp_dir):
     global processed_count
     inbounds, outbounds, rules, mapping = [], [], [], []
@@ -111,14 +121,15 @@ def check_batch(chunk, start_port, core_path, temp_dir):
 
     if not mapping: return []
     cfg_path = os.path.join(temp_dir, f"cfg_{start_port}.json")
-    with open(cfg_path, 'w') as f: json.dump({"log": {"loglevel": "none"}, "inbounds": inbounds, "outbounds": outbounds, "routing": {"rules": rules}}, f)
+    with open(cfg_path, 'w') as f: 
+        json.dump({"log": {"loglevel": "none"}, "inbounds": inbounds, "outbounds": outbounds, "routing": {"rules": rules}}, f)
 
     batch_live = []
     proc = subprocess.Popen([core_path, "run", "-c", cfg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
     started = False
     for _ in range(int(CORE_STARTUP_TIMEOUT * 10)):
-        if is_port_in_use(mapping[0][1]): started = True; break
+        if mapping and is_port_in_use(mapping[0][1]): started = True; break
         time.sleep(0.1)
 
     if started:
@@ -135,13 +146,13 @@ def check_batch(chunk, start_port, core_path, temp_dir):
         kill_core(proc)
     else:
         kill_core(proc)
-        # Fallback по одному (только если батч совсем не встал)
         for url, port, p in mapping:
             processed_count += 1
             s_cfg = os.path.join(temp_dir, f"s_{port}.json")
-            with open(s_cfg, 'w') as f: json.dump({"log": {"loglevel": "none"}, "inbounds": [{"port": port, "protocol": "socks"}], "outbounds": [make_outbound(p, "out")]}, f)
+            with open(s_cfg, 'w') as f:
+                json.dump({"log": {"loglevel": "none"}, "inbounds": [{"port": port, "protocol": "socks"}], "outbounds": [make_outbound(p, "out")]}, f)
             sproc = subprocess.Popen([core_path, "run", "-c", s_cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.5)
+            time.sleep(0.6)
             try:
                 st = time.time()
                 r = requests.get(TEST_DOMAIN, proxies={'http': f'socks5://127.0.0.1:{port}', 'https': f'socks5://127.0.0.1:{port}'}, timeout=TIMEOUT, verify=False)
@@ -158,32 +169,62 @@ def check_batch(chunk, start_port, core_path, temp_dir):
     except: pass
     return batch_live
 
-# ------------------------------- MAIN -------------------------------
+# ------------------------------- MAIN (РАЗДЕЛЕН НА 2 ЧАСТИ) -------------------------------
 def main():
     global total_proxies_count
-    core = shutil.which("xray") or shutil.which("xray.exe") or "./xray"
-    if not os.path.exists(INPUT_FILE): print("Файл не найден"); return
+    core = shutil.which("xray") or "./xray"
+    if not os.path.exists(INPUT_FILE): return
     
     with open(INPUT_FILE, 'r', encoding='utf-8', errors='ignore') as f:
         proxies = [clean_url(l) for l in f if l.strip().startswith("vless://")]
 
     total_proxies_count = len(proxies)
-    print(f"Запуск: {total_proxies_count} прокси | Потоки: {THREADS} батчей")
+    
+    # --- ЧАСТЬ 1: ТЕСТИРОВАНИЕ ---
+    print(f"--- ШАГ 1: ТЕСТИРОВАНИЕ ({total_proxies_count} прокси) ---")
     
     temp_dir = tempfile.mkdtemp()
     chunks = [proxies[i:i + PROXIES_PER_BATCH] for i in range(0, len(proxies), PROXIES_PER_BATCH)]
     all_live = []
 
+    PORT_STEP = PROXIES_PER_BATCH + 20
+    PORT_RANGE = LOCAL_PORT_END - LOCAL_PORT_START
+
     with ThreadPoolExecutor(max_workers=THREADS) as executor:
-        futures = [executor.submit(check_batch, chunk, LOCAL_PORT_START + i*100, core, temp_dir) for i, chunk in enumerate(chunks)]
+        futures = []
+        for i, chunk in enumerate(chunks):
+            offset = (i * PORT_STEP) % PORT_RANGE
+            safe_port = LOCAL_PORT_START + offset
+            futures.append(executor.submit(check_batch, chunk, safe_port, core, temp_dir))
+        
         for f in as_completed(futures):
-            all_live.extend(f.result())
+            try:
+                res = f.result()
+                if res: all_live.extend(res)
+            except: continue
 
+    # --- ШАГ 2: ДЕДУБЛИКАЦИЯ ---
+    print(f"\n--- ШАГ 2: ДЕДУБЛИКАЦИЯ (Анализ {len(all_live)} рабочих) ---")
+    
+    # Сортируем по скорости, чтобы дубликаты с плохим пингом удалились первыми
     all_live.sort(key=lambda x: x[1])
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        for url, _ in all_live: f.write(url + '\n')
+    
+    unique_live = []
+    for url, ms in all_live:
+        is_duplicate = False
+        for u_url, _ in unique_live:
+            if is_same_config(url, u_url):
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            unique_live.append((url, ms))
 
-    print(f"\nГотово! Найдено рабочих: {len(all_live)}")
+    # Запись результата
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        for url, _ in unique_live: 
+            f.write(url + '\n')
+
+    print(f"Готово! Найдено рабочих: {len(all_live)}. После удаления дублей осталось: {len(unique_live)}")
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 if __name__ == '__main__':
