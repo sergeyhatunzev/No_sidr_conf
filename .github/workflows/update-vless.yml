@@ -48,8 +48,7 @@ jobs:
 
       # === ИСПРАВЛЕННЫЙ БЛОК ПРОВЕРКИ ===
       - name: Run checker script (проверка рабочих)
-        env:
-          PYTHONUNBUFFERED: "1"  # ФИКС: Отключает задержку вывода строк в лог
+      
         run: |
           ulimit -n 65535        # ФИКС: Увеличиваем лимиты сокетов для THREADS=200
           python work_test.py
