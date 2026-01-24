@@ -9,6 +9,7 @@ import requests
 import re
 import json
 import urllib.parse
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
 
@@ -18,15 +19,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 INPUT_FILE = "sidr_vless.txt"
 OUTPUT_FILE = "sidr_vless_work.txt"
 TEST_DOMAIN = "https://www.google.com/generate_204"
-TIMEOUT = 12
-THREADS = 200            
-PROXIES_PER_BATCH = 80   
-LOCAL_PORT_START = 1025   
-LOCAL_PORT_END = 65000   
-CORE_STARTUP_TIMEOUT = 5.0
-chek_vivod = 0
+TIMEOUT_HTTP = 40  
+CORE_STARTUP_TIMEOUT = 10.0  
+THREADS = 500
 processed_count = 0
 total_proxies_count = 0
+
+counter_lock = threading.Lock()
+print_lock = threading.Lock()
 
 # ------------------------------- ПОМОЩНИКИ -------------------------------
 def clean_url(url):
@@ -36,202 +36,188 @@ def parse_vless(url):
     try:
         url = clean_url(url)
         if not url.startswith("vless://"): return None
-        parsed_url = urllib.parse.urlparse(url.split('#')[0])
-        query = urllib.parse.parse_qs(parsed_url.query)
-        get_p = lambda k: query.get(k, [""])[0].strip()
-        net_type = get_p("type").lower() or "tcp"
+        main_part = url.split('#')[0]
+        parsed_url = urllib.parse.urlparse(main_part)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        def get_p(key, default=""): return query_params.get(key, [default])[0].strip()
+
+        net_type = get_p("type", "tcp").lower()
+        if net_type in ["ws", "websocket"]: net_type = "ws"
+        elif net_type in ["grpc", "gun"]: net_type = "grpc"
+        elif net_type in ["http", "h2", "httpupgrade"]: net_type = "http"
+        else: net_type = "tcp"
+
         return {
             "uuid": urllib.parse.unquote(parsed_url.username or ""),
             "address": parsed_url.hostname or "",
             "port": parsed_url.port or 443,
-            "flow": get_p("flow") if get_p("flow") in ["xtls-rprx-vision", "xtls-rprx-direct"] else "",
-            "security": get_p("security") or "none",
+            "flow": get_p("flow").lower() if get_p("flow") in ["xtls-rprx-vision", "xtls-rprx-direct"] else "",
+            "security": get_p("security", "none").lower(),
             "pbk": get_p("pbk"),
             "sid": re.sub(r"[^a-fA-F0-9]", "", get_p("sid")),
             "sni": get_p("sni") or parsed_url.hostname,
             "fp": get_p("fp") or "chrome",
             "alpn": [x.strip() for x in get_p("alpn").split(",")] if get_p("alpn") else [],
-            "type": "ws" if net_type in ["ws", "websocket"] else "grpc" if net_type in ["grpc", "gun"] else "http" if net_type in ["http", "h2"] else "tcp",
+            "type": net_type,
             "host": get_p("host"),
             "path": urllib.parse.unquote(get_p("path")),
             "serviceName": get_p("serviceName"),
-            "headerType": get_p("headerType") or "none"
+            "headerType": get_p("headerType", "none"),
         }
     except: return None
 
-# Функция сравнения (из старого скрипта, без изменений)
-def is_same_config(url1, url2):
-    p1, p2 = parse_vless(url1), parse_vless(url2)
+def compare_proxies(p1, p2):
     if not p1 or not p2: return False
-    return (p1["address"] == p2["address"] and p1["port"] == p2["port"] and 
-            p1["uuid"] == p2["uuid"] and p1["sni"] == p2["sni"] and 
-            p1["type"] == p2["type"] and p1["path"] == p2["path"] and 
-            p1["pbk"] == p2["pbk"])
+    keys_to_compare = ["address", "port", "uuid", "type", "security", "sni", "path", "pbk", "sid", "flow"]
+    for key in keys_to_compare:
+        if p1.get(key) != p2.get(key): return False
+    return True
 
-def make_outbound(p, tag):
-    if not p: return None
+def deduplicate(live_results):
+    unique_list = []
+    seen_parsed = []
+    for url, ms in live_results:
+        p_current = parse_vless(url)
+        if not p_current: continue
+        is_duplicate = False
+        for p_seen in seen_parsed:
+            if compare_proxies(p_current, p_seen):
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            unique_list.append((url, ms))
+            seen_parsed.append(p_current)
+    return unique_list
+
+def make_full_config(p, local_port):
     user = {"id": p["uuid"], "encryption": "none"}
     if p["flow"]: user["flow"] = p["flow"]
     stream = {"network": p["type"], "security": p["security"]}
     if p["security"] in ["tls", "reality"]:
-        tls = {"serverName": p["sni"], "allowInsecure": True}
-        if p["alpn"]: tls["alpn"] = p["alpn"]
-        if p["security"] == "tls": stream["tlsSettings"] = tls
-        else: stream["realitySettings"] = {"publicKey": p["pbk"], "shortId": p["sid"], "serverName": p["sni"], "fingerprint": p["fp"], "spiderX": "/"}
-    if p["type"] == "ws": stream["wsSettings"] = {"path": p["path"] or "/", "headers": {"Host": p["host"] or p["sni"]}}
-    elif p["type"] == "grpc": stream["grpcSettings"] = {"serviceName": p["serviceName"]}
-    return {"protocol": "vless", "tag": tag, "settings": {"vnext": [{"address": p["address"], "port": p["port"], "users": [user]}]}, "streamSettings": stream}
+        tls_set = {"serverName": p["sni"], "allowInsecure": True}
+        if p["alpn"]: tls_set["alpn"] = p["alpn"]
+        if p["security"] == "tls": stream["tlsSettings"] = tls_set
+        else:
+            stream["realitySettings"] = {
+                "publicKey": p["pbk"], "shortId": p["sid"],
+                "serverName": p["sni"], "fingerprint": p["fp"], "spiderX": "/"
+            }
+    if p["type"] == "ws":
+        stream["wsSettings"] = {"path": p["path"] or "/", "headers": {"Host": p["host"] or p["sni"]}}
+    elif p["type"] == "grpc":
+        stream["grpcSettings"] = {"serviceName": p["serviceName"] or ""}
+    elif p["type"] == "http":
+        stream["httpSettings"] = {"path": p["path"] or "/", "host": [p["host"] or p["sni"]]}
+    elif p["type"] == "tcp" and p["headerType"] != "none":
+        stream["tcpSettings"] = {"header": {"type": p["headerType"]}}
+    return {
+        "log": {"loglevel": "none"},
+        "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "socks"}],
+        "outbounds": [{
+            "protocol": "vless",
+            "settings": {"vnext": [{"address": p["address"], "port": p["port"], "users": [user]}]},
+            "streamSettings": stream
+        }]
+    }
 
-def is_port_in_use(port):
-    if not (1024 <= port <= 65535): return False
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.1)
-            return s.connect_ex(('127.0.0.1', port)) == 0
-    except: return False
+def is_port_open(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.1)
+        return s.connect_ex(('127.0.0.1', port)) == 0
 
-def kill_core(proc):
-    if proc:
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except:
-            try: proc.kill()
-            except: pass
-
-def print_progress(addr, ms, is_single=False):
-    global processed_count, total_proxies_count, chek_vivod
-    pct = (processed_count / total_proxies_count) * 100 if total_proxies_count > 0 else 0
-    if chek_vivod == 50:
-        mode = "(S)" if is_single else ""
-        sys.stdout.write(f"\r[{pct:3.0f}%] LIVE {mode} {addr:<25} | {ms:>4}ms\n")
-        sys.stdout.flush()
-        chek_vivod = 0
-    else:
-        chek_vivod = chek_vivod + 1
-
-# ------------------------------- ЧЕКЕР (БЕЗ ИЗМЕНЕНИЙ) -------------------------------
-def check_batch(chunk, start_port, core_path, temp_dir):
+def check_single_proxy(url, index, core_path, temp_dir):
     global processed_count
-    inbounds, outbounds, rules, mapping = [], [], [], []
-    for i, url in enumerate(chunk):
-        p = parse_vless(url)
-        if not p: continue
-        port = start_port + i
-        inbounds.append({"port": port, "listen": "127.0.0.1", "protocol": "socks", "tag": f"in_{port}"})
-        outbounds.append(make_outbound(p, f"out_{port}"))
-        rules.append({"type": "field", "inboundTag": [f"in_{port}"], "outboundTag": f"out_{port}"})
-        mapping.append((url, port, p))
+    p = parse_vless(url)
+    if not p: return None
+    local_port = 10000 + (index % 45000)
+    config_path = os.path.join(temp_dir, f"cfg_{index}.json")
+    proc = None
+    res = None
+    try:
+        with open(config_path, "w") as f: json.dump(make_full_config(p, local_port), f)
+        
+        # Запуск с подавлением окон в Windows
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-    if not mapping: return []
-    cfg_path = os.path.join(temp_dir, f"cfg_{start_port}.json")
-    with open(cfg_path, 'w') as f: 
-        json.dump({"log": {"loglevel": "none"}, "inbounds": inbounds, "outbounds": outbounds, "routing": {"rules": rules}}, f)
+        proc = subprocess.Popen(
+            [core_path, "run", "-c", config_path], 
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            startupinfo=startupinfo
+        )
+        
+        start_t = time.time()
+        ready = False
+        while time.time() - start_t < CORE_STARTUP_TIMEOUT:
+            if is_port_open(local_port):
+                ready = True
+                break
+            if proc.poll() is not None: break
+            time.sleep(0.1)
 
-    batch_live = []
-    proc = subprocess.Popen([core_path, "run", "-c", cfg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
-    started = False
-    for _ in range(int(CORE_STARTUP_TIMEOUT * 10)):
-        if mapping and is_port_in_use(mapping[0][1]): started = True; break
-        time.sleep(0.1)
-
-    if started:
-        for url, port, p in mapping:
-            processed_count += 1
+        if ready:
+            proxies = {"http": f"socks5h://127.0.0.1:{local_port}", "https": f"socks5h://127.0.0.1:{local_port}"}
+            st = time.time()
             try:
-                st = time.time()
-                r = requests.get(TEST_DOMAIN, proxies={'http': f'socks5://127.0.0.1:{port}', 'https': f'socks5://127.0.0.1:{port}'}, timeout=TIMEOUT, verify=False)
+                r = requests.get(TEST_DOMAIN, proxies=proxies, timeout=TIMEOUT_HTTP, verify=False)
                 if r.status_code == 204:
-                    ms = round((time.time() - st) * 1000)
-                    batch_live.append((url, ms))
-                    print_progress(p['address'], ms)
+                    ms = int((time.time() - st) * 1000)
+                    res = (url, ms)
+                    with print_lock:
+                        print(f"LIVE | {p['address']:<20} | {ms:>4}ms | {p['type']}")
             except: pass
-        kill_core(proc)
-    else:
-        kill_core(proc)
-        for url, port, p in mapping:
-            processed_count += 1
-            s_cfg = os.path.join(temp_dir, f"s_{port}.json")
-            with open(s_cfg, 'w') as f:
-                json.dump({"log": {"loglevel": "none"}, "inbounds": [{"port": port, "protocol": "socks"}], "outbounds": [make_outbound(p, "out")]}, f)
-            sproc = subprocess.Popen([core_path, "run", "-c", s_cfg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.6)
-            try:
-                st = time.time()
-                r = requests.get(TEST_DOMAIN, proxies={'http': f'socks5://127.0.0.1:{port}', 'https': f'socks5://127.0.0.1:{port}'}, timeout=TIMEOUT, verify=False)
-                if r.status_code == 204:
-                    ms = round((time.time() - st) * 1000)
-                    batch_live.append((url, ms))
-                    print_progress(p['address'], ms, True)
-            except: pass
-            kill_core(sproc)
-            try: os.remove(s_cfg)
-            except: pass
-    
-    try: os.remove(cfg_path)
     except: pass
-    return batch_live
+    finally:
+        if proc:
+            try:
+                proc.kill()  # ПРИНУДИТЕЛЬНОЕ УБИЙСТВО
+                proc.wait(timeout=0.5) # Ждем освобождения ресурсов
+            except: pass
+        try: os.remove(config_path)
+        except: pass
+        with counter_lock: processed_count += 1
+    return res
 
-# ------------------------------- MAIN (РАЗДЕЛЕН НА 2 ЧАСТИ) -------------------------------
 def main():
     global total_proxies_count
     core = shutil.which("xray") or "./xray"
-    if not os.path.exists(INPUT_FILE): return
     
-    with open(INPUT_FILE, 'r', encoding='utf-8', errors='ignore') as f:
-        proxies = [clean_url(l) for l in f if l.strip().startswith("vless://")]
+    # Очистка старых процессов xray перед запуском
+    if os.name == 'nt': os.system("taskkill /f /im xray.exe >nul 2>&1")
+    else: os.system("killall -9 xray >/dev/null 2>&1")
+
+    if not os.path.exists(INPUT_FILE): return
+    with open(INPUT_FILE, "r", encoding="utf-8", errors="ignore") as f:
+        proxies = [clean_url(line) for line in f if line.strip().startswith("vless://")]
 
     total_proxies_count = len(proxies)
-    
-    # --- ЧАСТЬ 1: ТЕСТИРОВАНИЕ ---
-    print(f"--- ШАГ 1: ТЕСТИРОВАНИЕ ({total_proxies_count} прокси) ---")
-    
+    if total_proxies_count == 0: return
+
     temp_dir = tempfile.mkdtemp()
-    chunks = [proxies[i:i + PROXIES_PER_BATCH] for i in range(0, len(proxies), PROXIES_PER_BATCH)]
+    print(f"Проверка {total_proxies_count} прокси в {THREADS} потоках...")
+
     all_live = []
-
-    PORT_STEP = PROXIES_PER_BATCH + 20
-    PORT_RANGE = LOCAL_PORT_END - LOCAL_PORT_START
-
     with ThreadPoolExecutor(max_workers=THREADS) as executor:
-        futures = []
-        for i, chunk in enumerate(chunks):
-            offset = (i * PORT_STEP) % PORT_RANGE
-            safe_port = LOCAL_PORT_START + offset
-            futures.append(executor.submit(check_batch, chunk, safe_port, core, temp_dir))
-        
+        futures = [executor.submit(check_single_proxy, url, i, core, temp_dir) for i, url in enumerate(proxies)]
         for f in as_completed(futures):
-            try:
-                res = f.result()
-                if res: all_live.extend(res)
-            except: continue
+            result = f.result()
+            if result: all_live.append(result)
 
-    # --- ШАГ 2: ДЕДУБЛИКАЦИЯ ---
-    
+    all_live.sort(key=lambda x: x[1])
+    final_proxies = deduplicate(all_live)
 
-    
-    unique_live = []
-    for url, ms in all_live:
-        is_duplicate = False
-        for u_url, _ in unique_live:
-            if is_same_config(url, u_url):
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            unique_live.append((url, ms))
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        for url, _ in final_proxies:
+            f.write(url + "\n")
 
-    # Запись результата
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        for url, _ in unique_live: 
-            f.write(url + '\n')
+    try: shutil.rmtree(temp_dir)
+    except: pass
 
-    
+    print(f"\nНайдено живых: {len(all_live)}")
+    print(f"После дедупликации: {len(final_proxies)}")
+    print(f"Результат сохранен в {OUTPUT_FILE}")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
-
-
-
-
