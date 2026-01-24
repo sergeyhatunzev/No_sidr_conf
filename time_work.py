@@ -1,597 +1,160 @@
-import tempfile
-import sys
-import os
-import shutil
-import time
-import socket
-import subprocess
-import platform
-import requests
-import psutil
 import re
-import json
+import time
+import os
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import urllib3
-import threading
+from collections import defaultdict
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+WORK_FILE = "sidr_vless_work.txt"
+TIME_FILE = "sidr_vless_time.txt"
+OUTPUT_TIME_FILE = "sidr_vless_time.txt"
 
-# ------------------------------- НАСТРОЙКИ -------------------------------
-INPUT_FILE = "sidr_vless.txt"
-OUTPUT_FILE = "sidr_vless_work.txt"
-TEST_DOMAIN = "https://www.google.com/generate_204"
-TIMEOUT = 30
-THREADS = 100
-SINGLE_THREADS = 10
-PROXIES_PER_BATCH = 50
-LOCAL_PORT_START = 10000
-CORE_STARTUP_TIMEOUT = 4
-CORE_KILL_DELAY = 0.08
-CHECK_FIRST_PORTS = 3
+if not os.path.exists(WORK_FILE):
+    print(f"Ошибка: файл {WORK_FILE} не найден в репозитории!")
+    exit(1)
 
-# ------------------------------- RICH -------------------------------
-try:
-    from rich.console import Console
-    from rich.table import Table
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
-    console = Console()
-except ImportError:
-    print("Ошибка: pip install rich")
-    sys.exit(1)
+print(f"Читаю {WORK_FILE}...")
+with open(WORK_FILE, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
 
-logger = console
+current_urls = [
+    line.strip().replace('\ufeff', '').replace('\u200b', '')
+    for line in lines if line.strip().startswith("vless://")
+]
 
-# ------------------------------- ПОРТЫ -------------------------------
-port_lock = threading.Lock()
-current_port = LOCAL_PORT_START
+print(f"Найдено {len(current_urls)} рабочих конфигов.")
 
-def allocate_ports(count):
-    global current_port
-    with port_lock:
-        start = current_port
-        current_port += count + 25
-        return start
-
-# ------------------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------------------
+# --- Простой парсер VLESS (ключевые поля для сравнения) ---
 def clean_url(url):
     return url.strip().replace('\ufeff', '').replace('\u200b', '').replace('\n', '').replace('\r', '')
 
-# Регулярки для Reality
-REALITY_PBK_RE = re.compile(r"^[A-Za-z0-9_-]{43,44}$")
-REALITY_SID_RE = re.compile(r"^[0-9a-fA-F]{0,32}$")
-FLOW_ALLOWED = {"", "xtls-rprx-vision", "xtls-rprx-direct", "xtls-rprx-splice"}
-
-# ------------------------------- ПОЛНЫЙ ПАРСЕР VLESS -------------------------------
-def parse_vless(url):
+def parse_vless_key(url):
+    url = clean_url(url)
+    if not url.startswith("vless://"):
+        return None
     try:
-        url = clean_url(url)
-        if not url.startswith("vless://"):
-            return None
-
         if '#' in url:
-            main_part, tag_raw = url.split('#', 1)
-            tag = urllib.parse.unquote(tag_raw).strip()
+            main_part, _ = url.split('#', 1)
         else:
             main_part = url
-            tag = "vless"
-
         parsed_url = urllib.parse.urlparse(main_part)
-        if parsed_url.scheme != "vless":
-            return None
-
         uuid = urllib.parse.unquote(parsed_url.username or "")
         address = parsed_url.hostname or ""
         port = parsed_url.port or 443
-
-        if not uuid or not address:
-            return None
-
-        query_params = urllib.parse.parse_qs(parsed_url.query)
+        query = urllib.parse.parse_qs(parsed_url.query)
 
         def get_p(key, default=""):
-            vals = query_params.get(key, [default])
+            vals = query.get(key, [default])
             return vals[0].strip()
 
-        encryption = get_p("encryption", "none").lower()
-        net_type = get_p("type", "tcp").lower()
-
-        if net_type in ["ws", "websocket"]:
-            net_type = "ws"
-        elif net_type in ["grpc", "gun"]:
-            net_type = "grpc"
-        elif net_type in ["http", "h2", "httpupgrade"]:
-            net_type = "http"
-        else:
-            net_type = "tcp"
-
-        flow = get_p("flow", "").lower()
-        if flow not in FLOW_ALLOWED:
-            flow = ""
-
-        stream_security = get_p("security", "none").lower()
-        if stream_security not in ["tls", "reality", "none"]:
-            stream_security = "none"
-
+        security = get_p("security", "none").lower()
+        if get_p("pbk") and security != "reality":
+            security = "reality"
         pbk = get_p("pbk", "")
-        if pbk and REALITY_PBK_RE.match(pbk):
-            if stream_security != "reality":
-                stream_security = "reality"
-        else:
-            pbk = ""
+        sni = get_p("sni", "") or address
+        flow = get_p("flow", "").lower()
+        type_ = get_p("type", "tcp").lower()
+        if type_ in ["ws", "websocket"]: type_ = "ws"
+        elif type_ in ["grpc", "gun"]: type_ = "grpc"
+        elif type_ in ["http", "h2", "httpupgrade"]: type_ = "http"
 
-        sid = get_p("sid", "")
-        sid = re.sub(r"[^a-fA-F0-9]", "", sid)
-        if len(sid) > 32 or len(sid) % 2 != 0:
-            sid = ""
-        if sid and not REALITY_SID_RE.match(sid):
-            sid = ""
-
-        sni = get_p("sni", "")
-        fp = get_p("fp", "chrome")
-        alpn_str = get_p("alpn", "")
-        alpn = [x.strip() for x in alpn_str.split(",")] if alpn_str else []
-
-        return {
-            "protocol": "vless",
-            "uuid": uuid,
-            "address": address,
-            "port": port,
-            "flow": flow,
-            "security": stream_security,
-            "encryption": encryption,
-            "pbk": pbk,
-            "sid": sid,
-            "sni": sni or address,
-            "fp": fp,
-            "alpn": alpn,
-            "type": net_type,
-            "host": get_p("host", ""),
-            "path": urllib.parse.unquote(get_p("path", "")),
-            "serviceName": get_p("serviceName", ""),
-            "headerType": get_p("headerType", "none"),
-            "tag": tag
-        }
-    except Exception:
-        return None
-
-
-def get_proxy_info(parsed):
-    if not parsed:
-        return "unknown", "error"
-    addr = f"{parsed['address']}:{parsed['port']}"
-    tag = parsed['tag'][:50]
-    return addr, tag
-
-
-# ------------------------------- ГЕНЕРАЦИЯ OUTBOUND -------------------------------
-def make_outbound(parsed, tag):
-    if not parsed:
-        return None
-
-    user = {
-        "id": parsed["uuid"],
-        "encryption": "none"
-    }
-    if parsed["flow"]:
-        user["flow"] = parsed["flow"]
-
-    vnext = [{"address": parsed["address"], "port": parsed["port"], "users": [user]}]
-
-    stream = {"network": parsed["type"], "security": parsed["security"]}
-
-    tls_settings = {
-        "serverName": parsed["sni"],
-        "allowInsecure": True
-    }
-    if parsed["alpn"]:
-        tls_settings["alpn"] = parsed["alpn"]
-
-    if parsed["security"] == "tls":
-        stream["tlsSettings"] = tls_settings
-    elif parsed["security"] == "reality":
-        stream["realitySettings"] = {
-            "publicKey": parsed["pbk"],
-            "shortId": parsed["sid"],
-            "serverName": parsed["sni"],
-            "fingerprint": parsed["fp"],
-            "spiderX": "/"
-        }
-
-    if parsed["type"] == "ws":
-        host = parsed["host"] or parsed["sni"]
-        stream["wsSettings"] = {
-            "path": parsed["path"] or "/",
-            "headers": {"Host": host} if host else {}
-        }
-    elif parsed["type"] == "grpc":
-        stream["grpcSettings"] = {
-            "serviceName": parsed["serviceName"],
-            "multiMode": False
-        }
-    elif parsed["type"] == "http":
-        host = parsed["host"] or parsed["sni"]
-        stream["httpSettings"] = {
-            "path": parsed["path"] or "/",
-            "host": [host] if host else []
-        }
-    elif parsed["type"] == "tcp" and parsed["headerType"] != "none":
-        stream["tcpSettings"] = {
-            "header": {"type": parsed["headerType"]}
-        }
-
-    return {
-        "protocol": "vless",
-        "tag": tag,
-        "settings": {"vnext": vnext},
-        "streamSettings": stream
-    }
-
-
-# ------------------------------- КОНФИГ ПАЧКИ -------------------------------
-def create_batch_config_file(proxy_list, start_port, work_dir):
-    inbounds = []
-    outbounds = []
-    rules = []
-    valid_proxies = []
-
-    for i, url in enumerate(proxy_list):
-        port = start_port + i
-        in_tag = f"in_{port}"
-        out_tag = f"out_{port}"
-
-        inbounds.append({
-            "port": port,
-            "listen": "127.0.0.1",
-            "protocol": "socks",
-            "tag": in_tag,
-            "settings": {"udp": False}
-        })
-
-        parsed = parse_vless(url)
-        outbound = make_outbound(parsed, out_tag)
-        if not outbound:
-            continue
-
-        outbounds.append(outbound)
-        rules.append({"type": "field", "inboundTag": [in_tag], "outboundTag": out_tag})
-        valid_proxies.append((url, port, parsed))
-
-    if not valid_proxies:
-        return None, None, None
-
-    config = {
-        "log": {"loglevel": "none"},
-        "inbounds": inbounds,
-        "outbounds": outbounds,
-        "routing": {"rules": rules, "domainStrategy": "AsIs"}
-    }
-
-    path = os.path.join(work_dir, f"batch_{start_port}.json")
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2)
-
-    return path, valid_proxies, None
-
-
-# ------------------------------- ОДИНОЧНАЯ ПРОВЕРКА -------------------------------
-def single_check(url, port, work_dir, parsed, task, progress):
-    addr, tag = get_proxy_info(parsed)
-
-    cfg_path, mapping_single, _ = create_batch_config_file([url], port, work_dir)
-    if not mapping_single:
-        progress.advance(task)
-        return None
-
-    proc = run_core(CORE_PATH, cfg_path)
-    if not proc:
-        progress.advance(task)
-        try:
-            os.remove(cfg_path)
-        except:
-            pass
-        return None
-
-    started = False
-    for _ in range(int(CORE_STARTUP_TIMEOUT * 30)):
-        if is_port_in_use(port):
-            started = True
-            break
-        time.sleep(0.12)
-
-    if started:
-        time.sleep(1.4)
-        lat, err = check_connection(port)
-        if lat is not False:
-            logger.print(f"[green]LIVE (одиночный режим)[/] {addr:<22} | {lat:>4}ms | {tag}")
-            kill_core(proc)
-            time.sleep(CORE_KILL_DELAY)
-            try:
-                os.remove(cfg_path)
-            except:
-                pass
-            progress.advance(task)
-            return (url, lat)
-        else:
-            logger.print(f"[red]DEAD (одиночный режим)[/] {addr:<22} | {'':>8} | {tag} → {err or 'no response'}")
-    else:
-        logger.print(f"[red]DEAD (одиночный режим)[/] {addr:<22} | {'':>8} | {tag} → core not started")
-
-    kill_core(proc)
-    time.sleep(CORE_KILL_DELAY)
-    try:
-        os.remove(cfg_path)
-    except:
-        pass
-
-    progress.advance(task)
-    return None
-
-
-# ------------------------------- ОСТАЛЬНОЕ -------------------------------
-def is_port_in_use(port):
-    try:
-        with socket.socket() as s:
-            s.settimeout(0.08)
-            return s.connect_ex(('127.0.0.1', port)) == 0
-    except:
-        return False
-
-
-def run_core(core_path, config_path):
-    cmd = [core_path, "run", "-c", config_path]
-    startupinfo = subprocess.STARTUPINFO() if platform.system() == "Windows" else None
-    if startupinfo:
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-    try:
-        return subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            startupinfo=startupinfo
+        # Ключ для сравнения — host НЕ включаем (игнорируем)
+        # path, headerType и остальные — учитываются
+        return (
+            address.lower(), port, uuid,
+            type_, flow, security,
+            sni.lower(), pbk, get_p("sid", ""),
+            get_p("fp", ""),
+            tuple(sorted(get_p("alpn", "").split(","))) if get_p("alpn") else (),
+            get_p("path", ""),          # path учитывается
+            get_p("headerType", "none") # headerType учитывается
         )
-    except Exception as e:
-        logger.print(f"[bold red]Ошибка запуска xray: {e}[/]")
+    except:
         return None
 
+# --- Читаем старые timestamps по ключам ---
+old_key_times = defaultdict(int)  # key -> самый старый timestamp
+old_exact_times = {}  # url -> ts (fallback)
 
-def kill_core(proc):
-    if not proc:
-        return
+if os.path.exists(TIME_FILE):
+    print("Найден предыдущий sidr_vless_time.txt, переношу timestamps по параметрам...")
+    with open(TIME_FILE, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        match = re.search(r'\(unixtime\s*(\d+)\)', line) or re.search(r'unix:\s*(\d+)', line)
+        if match:
+            add_ts = int(match.group(1))
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith('vless://'):
+                i += 1
+            if i < len(lines):
+                url = lines[i].strip().replace('\ufeff', '').replace('\u200b', '')
+                if url.startswith('vless://'):
+                    key = parse_vless_key(url)
+                    if key:
+                        if old_key_times[key] == 0 or add_ts < old_key_times[key]:
+                            old_key_times[key] = add_ts
+                    old_exact_times[url] = add_ts
+        i += 1
+else:
+    print("Предыдущий sidr_vless_time.txt не найден — все конфиги считаются новыми.")
 
-    try:
-        proc.kill()
-        if psutil.pid_exists(proc.pid):
-            for child in psutil.Process(proc.pid).children(recursive=True):
-                child.kill()
-    except:
-        pass
+# --- Функция склонений ---
+def plural(n, one, few, many):
+    if 11 <= n % 100 <= 14:
+        return many
+    if n % 10 == 1:
+        return one
+    if 2 <= n % 10 <= 4:
+        return few
+    return many
 
+current_unix = int(time.time())
 
-def check_connection(port):
-    proxies = {
-        'http': f'socks5://127.0.0.1:{port}',
-        'https': f'socks5://127.0.0.1:{port}'
-    }
-    try:
-        start = time.time()
-        r = requests.get(TEST_DOMAIN, proxies=proxies, timeout=TIMEOUT, verify=False)
-        latency = round((time.time() - start) * 1000)
-        if r.status_code == 204:
-            return latency, None
-        return False, f"HTTP {r.status_code}"
-    except requests.exceptions.ConnectTimeout:
-        return False, "ConnectTimeout"
-    except requests.exceptions.ReadTimeout:
-        return False, "ReadTimeout"
-    except Exception as e:
-        return False, str(e)[:40]
+# --- Собираем конфиги с дедубликацией ---
+unique_configs = {}  # key -> (add_ts, uptime_str, url)
 
+for url in current_urls:
+    key = parse_vless_key(url)
+    if not key:
+        continue
 
-# ------------------------------- ДЕДУПЛИКАЦИЯ -------------------------------
-def _are_equal(a, b):
-    return (a == b) or (not a and not b)
+    if key in old_key_times and old_key_times[key] > 0:
+        add_ts = old_key_times[key]  # самый старый для этого конфига
+    else:
+        add_ts = old_exact_times.get(url, current_unix)
 
+    uptime_sec = current_unix - add_ts
+    days = uptime_sec // 86400
+    hours = (uptime_sec % 86400) // 3600
+    minutes = (uptime_sec % 3600) // 60
+    seconds = uptime_sec % 60
 
-def _alpn_equal(a_list, b_list):
-    return (a_list or []) == (b_list or [])
+    parts = []
+    if days > 0:
+        parts.append(f"{days} {plural(days,'день','дня','дней')}")
+    if hours > 0 or days > 0:
+        parts.append(f"{hours} {plural(hours,'час','часа','часов')}")
+    if minutes > 0 or hours > 0 or days > 0:
+        parts.append(f"{minutes} {plural(minutes,'минута','минуты','минут')}")
+    parts.append(f"{seconds} {plural(seconds,'секунда','секунды','секунд')}")
 
+    uptime_str = " ".join(parts)
 
-def compare_parsed(a, b, remarks=False):
-    if not a or not b:
-        return False
-    return (
-        _are_equal(a.get("protocol"), b.get("protocol"))
-        and _are_equal(a.get("address"), b.get("address"))
-        and a.get("port") == b.get("port")
-        and _are_equal(a.get("uuid"), b.get("uuid"))
-        and _are_equal(a.get("encryption"), b.get("encryption"))
-        and _are_equal(a.get("type"), b.get("type"))
-        and _are_equal(a.get("headerType"), b.get("headerType"))
-        and _are_equal(a.get("path"), b.get("path"))
-        and _are_equal(a.get("security"), b.get("security"))
-        and _are_equal(a.get("flow"), b.get("flow"))
-        and _are_equal(a.get("sni"), b.get("sni"))
-        and _alpn_equal(a.get("alpn"), b.get("alpn"))
-        and _are_equal(a.get("fp"), b.get("fp"))
-        and _are_equal(a.get("pbk"), b.get("pbk"))
-        and _are_equal(a.get("sid"), b.get("sid"))
-        and (not remarks or a.get("tag") == b.get("tag"))
-    )
+    # Оставляем только первый вариант для каждого уникального ключа
+    if key not in unique_configs:
+        unique_configs[key] = (add_ts, uptime_str, url)
 
+# --- Сортируем по времени ---
+configs = list(unique_configs.values())
+configs.sort(key=lambda x: x[0])  # от старых к новым
 
-def deduplicate_proxies(proxies_with_latency):
-    lst_keep = []
-    lst_remove = []
+# --- Записываем в файл ---
+with open(OUTPUT_TIME_FILE, 'w', encoding='utf-8') as f:
+    for add_ts, uptime_str, url in configs:
+        f.write(f"# работает {uptime_str} (unixtime {add_ts})\n")
+        f.write(url + "\n\n")
 
-    for url, latency in proxies_with_latency:
-        parsed = parse_vless(url)
-        if not parsed:
-            lst_keep.append((url, latency))
-            continue
-
-        exists = any(compare_parsed(parse_vless(k_url), parsed) for k_url, _ in lst_keep)
-
-        if not exists:
-            lst_keep.append((url, latency))
-        else:
-            lst_remove.append((url, latency))
-
-    return lst_keep, len(lst_remove)
-
-
-# ------------------------------- MAIN -------------------------------
-def main():
-    global CORE_PATH
-
-    TEMP_DIR = tempfile.mkdtemp()
-
-    CORE_PATH = shutil.which("xray") or shutil.which("xray.exe")
-    if not CORE_PATH:
-        for c in ["xray", "xray.exe", "./xray", "./xray.exe"]:
-            if os.path.exists(c):
-                CORE_PATH = os.path.abspath(c)
-                break
-
-    if not CORE_PATH:
-        logger.print("[bold red]xray / xray.exe не найден![/]")
-        sys.exit(1)
-
-    logger.print(f"[green]Ядро: {CORE_PATH}[/]")
-
-    if not os.path.exists(INPUT_FILE):
-        logger.print(f"[bold red]{INPUT_FILE} не найден![/]")
-        sys.exit(1)
-
-    with open(INPUT_FILE, 'r', encoding='utf-8', errors='ignore') as f:
-        raw_lines = f.readlines()
-
-    proxies = [clean_url(l) for l in raw_lines if l.strip().startswith("vless://")]
-
-    if not proxies:
-        logger.print("[bold red]Нет валидных vless:// ссылок в файле[/]")
-        sys.exit(1)
-
-    logger.print(f"[cyan]Найдено {len(proxies)} vless ссылок → проверка в {THREADS} потоках[/]")
-
-    chunks = [proxies[i:i + PROXIES_PER_BATCH] for i in range(0, len(proxies), PROXIES_PER_BATCH)]
-
-    live = []
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}"),
-        BarColumn(),
-        TextColumn("{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console
-    ) as progress:
-        task = progress.add_task("[cyan]Проверка прокси...", total=len(proxies))
-
-        def check_batch(chunk, start_port):
-            cfg_path, mapping, _ = create_batch_config_file(chunk, start_port, TEMP_DIR)
-            if not mapping:
-                return []
-
-            proc = run_core(CORE_PATH, cfg_path)
-            if not proc:
-                return []
-
-            ports_to_check = [mapping[i][1] for i in range(min(CHECK_FIRST_PORTS, len(mapping)))]
-
-            started = False
-            for _ in range(int(CORE_STARTUP_TIMEOUT * 35)):
-                for p in ports_to_check:
-                    if is_port_in_use(p):
-                        started = True
-                        break
-                if started:
-                    break
-                time.sleep(0.1)
-
-            batch_live = []
-
-            if started:
-                time.sleep(2.2)
-                for url, port, parsed in mapping:
-                    lat, err = check_connection(port)
-                    addr, tag = get_proxy_info(parsed)
-                    if lat is not False:
-                        logger.print(f"[green]LIVE[/] {addr:<22} | {lat:>4}ms | {tag}")
-                        batch_live.append((url, lat))
-                    else:
-                        logger.print(f"[red]DEAD[/] {addr:<22} | {'':>8} | {tag} → {err or 'no response'}")
-                    progress.advance(task)
-            else:
-                logger.print(f"[bold yellow]Пачка не стартовала → одиночный режим ({SINGLE_THREADS} потоков)[/]")
-                kill_core(proc)
-                time.sleep(0.6)
-
-                single_futures = []
-                with ThreadPoolExecutor(max_workers=SINGLE_THREADS) as single_executor:
-                    for url, _, parsed in mapping:
-                        single_port = allocate_ports(1)
-                        single_futures.append(
-                            single_executor.submit(single_check, url, single_port, TEMP_DIR, parsed, task, progress)
-                        )
-
-                    for future in as_completed(single_futures):
-                        result = future.result()
-                        if result:
-                            batch_live.append(result)
-
-            kill_core(proc)
-            time.sleep(CORE_KILL_DELAY)
-            try:
-                os.remove(cfg_path)
-            except:
-                pass
-
-            return batch_live
-
-        with ThreadPoolExecutor(max_workers=THREADS) as executor:
-            futures = []
-            for chunk in chunks:
-                batch_start_port = allocate_ports(len(chunk))
-                futures.append(executor.submit(check_batch, chunk, batch_start_port))
-
-            for future in as_completed(futures):
-                live.extend(future.result())
-
-    live, removed_count = deduplicate_proxies(live)
-    logger.print(f"[yellow]Удалено дубликатов: {removed_count}[/]")
-
-    live.sort(key=lambda x: x[1])
-
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        for url, _ in live:
-            f.write(url + '\n')
-
-    table = Table(title=f"Готово! Рабочих: {len(live)} из {len(proxies)}")
-    table.add_column("Пинг", style="green")
-    table.add_column("Тег")
-    for url, ping in live[:20]:
-        _, tag = get_proxy_info(parse_vless(url))
-        table.add_row(f"{ping} ms", tag)
-
-    console.print(table)
-    logger.print(f"\n[bold green]Рабочие ссылки сохранены → {OUTPUT_FILE}[/]")
-
-    try:
-        shutil.rmtree(TEMP_DIR)
-    except:
-        pass
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.print("\n[red]Остановлено пользователем[/]")
-    except Exception as e:
-        logger.print(f"[bold red]Критическая ошибка: {e}[/]")
-        import traceback
-        traceback.print_exc()
-
+print(f"Готово! Файл {OUTPUT_TIME_FILE} обновлён с сортировкой от старых к новым.")
+print(f"Оставлено уникальных конфигов: {len(configs)}")
