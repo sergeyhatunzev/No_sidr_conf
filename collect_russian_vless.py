@@ -7,6 +7,7 @@ from collections import OrderedDict
 import concurrent.futures  # Добавлено для многопоточности
 
 CIDR_STRINGS = [
+
     '2.56.138.0/24',
     '2.59.49.0/24',
     '5.8.72.0/21',
@@ -1676,7 +1677,7 @@ CIDR_STRINGS = [
    '95.163.180.0/22',
    '95.163.208.0/21',
    '95.163.216.0/22',
-   '95.163.248.0/21',
+   '95.163.248.0/22',
    '95.163.32.0/19',
    '95.25.120.0/22',
    '95.25.124.0/22',
@@ -1769,7 +1770,12 @@ print(f"Генерация завершена: {len(allowed_ips_set):,} уник
 # URL источников
 MAIN_URL = 'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt'
 ADDITIONAL_URLS = [
-   
+    "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/test.txt"
+    "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Bypass%20%E2%84%962",
+    "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Bypass%20%E2%84%963",
+    "https://gitverse.ru/api/repos/Vsevj/OBS/raw/branch/master/wwh",
+   "https://storage.yandexcloud.net/nllrcn-proxy-subs/subs/prem-links.txt",
+   "https://raw.githubusercontent.com/bonymalomalo/vless-auto-update/refs/heads/main/vless-scan/vless.txt",
    "https://s3c3.001.gpucloud.ru/dixsm/htxml",
    "https://raw.githubusercontent.com/ASTRACAT2022/VPN-FREE-astra.net-V1/refs/heads/main/website/configs/raw_configs.yaml",
    "https://etoneya.a9fm.site/",
@@ -2517,38 +2523,61 @@ else:
 
 print(f"\nВсего собрано vless-ссылок: {len(all_vless_lines)}")
 
-# === Умная дедупликация: один сервер = одна строка, независимо от названия и fp ===
-def get_dedup_key(vless_url):
-    """Возвращает ключ для дедупликации: всё кроме #комментария и параметра fp"""
-    # Убираем фрагмент после #
-    url_no_fragment = re.sub(r'#.*$', '', vless_url).strip()
-    
-    # Если нет параметров — возвращаем как есть
-    if '?' not in url_no_fragment:
-        return url_no_fragment
-    
-    base = url_no_fragment.split('?')[0]
-    params_str = url_no_fragment.split('?', 1)[1]
-    
-    # Разбиваем параметры, убираем fp=... и remark=...
-    params = params_str.split('&')
-    filtered = []
-    for p in params:
-        if p.startswith('fp=') or p.startswith('remark='):
-            continue
-        if p:  # пропускаем пустые
-            filtered.append(p)
-    
-    # Сортируем, чтобы порядок параметров не влиял
-    filtered.sort()
-    
-    if filtered:
-        return f"{base}?{'&'.join(filtered)}"
-    else:
-        return base
+# === Дедупликация по основным параметрам VLESS ===
+def parse_vless_key(url):
+    """Парсит URL и возвращает ключ для дедупликации (без fp и remark)"""
+    import urllib.parse
+    url = url.strip()
+    if not url.startswith("vless://"):
+        return None
+    try:
+        if '#' in url:
+            main_part, _ = url.split('#', 1)
+        else:
+            main_part = url
+        parsed_url = urllib.parse.urlparse(main_part)
+        uuid = urllib.parse.unquote(parsed_url.username or "")
+        address = parsed_url.hostname or ""
+        port = parsed_url.port or 443
+        query = urllib.parse.parse_qs(parsed_url.query)
 
-print("Выполняем умную дедупликацию (один сервер — одна строка, без учёта названий и fp)...")
-unique_lines = list(OrderedDict((get_dedup_key(line), line) for line in all_vless_lines).values())
+        def get_p(key, default=""):
+            vals = query.get(key, [default])
+            return vals[0].strip() if vals else default
+
+        security = get_p("security", "none").lower()
+        if get_p("pbk") and security != "reality":
+            security = "reality"
+        pbk = get_p("pbk", "")
+        sni = get_p("sni", "") or address
+        flow = get_p("flow", "").lower()
+        type_ = get_p("type", "tcp").lower()
+        if type_ in ["ws", "websocket"]: type_ = "ws"
+        elif type_ in ["grpc", "gun"]: type_ = "grpc"
+        elif type_ in ["http", "h2", "httpupgrade"]: type_ = "http"
+
+        # Ключ для сравнения — не включаем fp и remark
+        return (
+            address.lower(), port, uuid,
+            type_, flow, security,
+            sni.lower(), pbk, get_p("sid", ""),
+            tuple(sorted(get_p("alpn", "").split(","))) if get_p("alpn") else (),
+            get_p("path", ""),
+            get_p("headerType", "none")
+        )
+    except:
+        return None
+
+print("Выполняем дедупликацию по основным параметрам VLESS...")
+unique_configs = {}  # key -> url
+for url in all_vless_lines:
+    key = parse_vless_key(url)
+    if not key:
+        continue
+    if key not in unique_configs:
+        unique_configs[key] = url
+
+unique_lines = list(unique_configs.values())
 
 print(f"После удаления дубликатов по серверу: {len(unique_lines)} уникальных\n")
 # =====================================================================
