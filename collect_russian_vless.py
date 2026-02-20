@@ -7,6 +7,36 @@ from collections import OrderedDict
 import concurrent.futures  # Добавлено для многопоточности
 
 CIDR_STRINGS = [
+#добавил от sodowvpn
+
+    '51.250.0.0/17',
+    '84.201.128.0/18',
+    '158.160.0.0/16',
+    '217.16.24.0/21',
+    '95.163.248.0/22',
+    '185.241.192.0/22',
+    '185.39.206.0/24',
+    '91.222.239.0/24',
+    '109.73.201.0/24',
+    '95.181.182.0/24',
+    '89.253.200.0/21',
+    '79.174.91.0/24',
+    '79.174.92.0/24',
+    '79.174.93.0/24',
+    '79.174.94.0/24',
+    '79.174.95.0/24',
+    '185.177.73.0/24',
+    '134.17.94.0/24',
+    '185.141.216.0/24',
+    '103.111.114.0/24',
+    '78.159.247.0/24',
+    '87.250.247.0/24',
+    '87.250.250.0/24',
+    '87.250.251.0/24',
+    '87.250.254.0/24',
+    '77.88.21.0/24',
+
+#shadow vpn закончено
 
     '2.56.138.0/24',
     '2.59.49.0/24',
@@ -1770,6 +1800,7 @@ print(f"Генерация завершена: {len(allowed_ips_set):,} уник
 # URL источников
 MAIN_URL = 'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/All_Configs_Sub.txt'
 ADDITIONAL_URLS = [
+    "https://s3c3.001.gpucloud.ru/megofan/script"
     "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/test.txt"
     "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Bypass%20%E2%84%962",
     "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Bypass%20%E2%84%963",
